@@ -4,3 +4,7 @@ cs265-lsm-tree
 workload.txt
 target
 debug
+wickdb
+Rust-LSM-KV
+leveldb
+leveldb-rs
