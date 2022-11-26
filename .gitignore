@@ -1,0 +1,6 @@
+.DS_Store
+.vscode
+cs265-lsm-tree
+workload.txt
+target
+debug
