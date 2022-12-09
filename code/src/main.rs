@@ -1,3 +1,5 @@
+use std::env; // manipulate process env, such as env vars, proc args, etc.
+
 fn main() {
-    println!("Hello, world!");
+    // create a db with the default config.
 }
