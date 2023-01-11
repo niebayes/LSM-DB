@@ -1,6 +1,2 @@
-mod db;
-
-pub type KeyType = int;
-pub type ValueType = int;
-
-pub struct InternalKey {}
+pub type KeyType = i32;
+pub type ValueType = i32;

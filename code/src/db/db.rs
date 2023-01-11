@@ -1,28 +1,25 @@
-mod db;
-use config::Config;
+use crate::db::cmd::Command;
+use crate::db::config::Config;
 
-pub struct DB {
-    cfg: Config, // DB config.
+pub struct Db {
+    /// database config.
+    cfg: Config,
 }
 
-impl DB {
-    pub fn new(cfg: Config) -> DB {
-        DB { cfg: cfg }
+impl Db {
+    pub fn new(cfg: Config) -> Db {
+        Db { cfg: cfg }
     }
 
-    pub fn run(&mut self) {
-        // repeatedly read user commands from the terminal.
-        loop {
-            match self.get_next_cmd() {
-                Command::Put(key, val) => {}
-                Command::Get(key) => {}
-                Command::Range(start_key, end_key) => {}
-                Command::Delete(key) => {}
-                Command::Load(cmd_file) => {}
-                Command::PrintStats => {}
-            }
+    pub fn handle_cmd(&mut self, cmd: Command) {
+        match cmd {
+            Command::Put(key, val) => {}
+            Command::Get(key) => {}
+            Command::Range(start_key, end_key) => {}
+            Command::Delete(key) => {}
+            Command::Load(cmd_batch_file) => {}
+            Command::PrintStats => {}
+            _ => {}
         }
     }
-
-    fn get_next_cmd(&mut self) -> Command {}
 }
