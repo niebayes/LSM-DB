@@ -1,7 +1,7 @@
 use clap::Parser;
 
 /// command line options.
-// deprecated for now.
+/// deprecated for now.
 #[derive(Parser)]
 pub struct Args {
     /// host address.

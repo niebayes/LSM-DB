@@ -1,13 +1,13 @@
-use crate::db::types::{KeyType, ValueType};
+use crate::util::types::{UserKey, UserValue};
 use std::path::Path;
 
-// commands provided by the domain specific language.
+// commands provided by the server.
 pub enum Command {
-    Put(KeyType, ValueType), // insert a kv pair into the db. Old value will be replaced.
-    Get(KeyType),            // fetch the associated value of the given key if the key exists.
-    Range(KeyType, KeyType), // fetch values in the key range [start_key, end_key).
-    Delete(KeyType),         // remove the kv pair associated with the given key.
-    Load(String),            // load kv pairs stored in the file.
+    Put(UserKey, UserValue), // upsert a kv pair to the db.
+    Get(UserKey),            // fetch the associated value of the given key if the key exists.
+    Range(UserKey, UserKey), // fetch values in the key range [start_key, end_key).
+    Delete(UserKey),         // remove the kv pair associated with the given key if the key exists.
+    Load(String),            // upsert kv pairs stored in the file to the db.
     PrintStats, // print the current state of the db including the in-mem states and the on-disk states.
     Quit,       // terminate the session.
     Help,       // print help options.
@@ -20,30 +20,35 @@ impl Command {
             "p" | "put" => {
                 if tokens.len() == 3 && is_valid_key(tokens[1]) && is_valid_value(tokens[2]) {
                     return Some(Command::Put(
-                        tokens[1].as_ptr() as KeyType,
-                        tokens[2].as_ptr() as ValueType,
+                        tokens[1].as_ptr() as UserKey,
+                        tokens[2].as_ptr() as UserValue,
                     ));
                 }
                 None
             }
             "g" | "get" => {
                 if tokens.len() == 2 && is_valid_key(tokens[1]) {
-                    return Some(Command::Get(tokens[1].as_ptr() as KeyType));
+                    return Some(Command::Get(tokens[1].as_ptr() as UserKey));
                 }
                 None
             }
             "r" | "range" => {
                 if tokens.len() == 3 && is_valid_key(tokens[1]) && is_valid_key(tokens[2]) {
-                    return Some(Command::Range(
-                        tokens[1].as_ptr() as KeyType,
-                        tokens[2].as_ptr() as KeyType,
-                    ));
+                    let start_key = tokens[1].as_ptr() as UserKey;
+                    let end_key = tokens[2].as_ptr() as UserKey;
+                    // ensure the range is valid.
+                    if start_key <= end_key {
+                        return Some(Command::Range(
+                            tokens[1].as_ptr() as UserKey,
+                            tokens[2].as_ptr() as UserKey,
+                        ));
+                    }
                 }
                 None
             }
             "d" | "delete" => {
                 if tokens.len() == 2 && is_valid_key(tokens[1]) {
-                    return Some(Command::Get(tokens[1].as_ptr() as KeyType));
+                    return Some(Command::Get(tokens[1].as_ptr() as UserKey));
                 }
                 None
             }
@@ -78,18 +83,12 @@ impl Command {
 
 /// return true if the int_str str can be casted to the key type without error.
 fn is_valid_key(int_str: &str) -> bool {
-    if let Err(_) = int_str.parse::<KeyType>() {
-        return false;
-    }
-    return true;
+    int_str.parse::<UserKey>().is_ok()
 }
 
 /// return true if the int_str str can be casted to the value type without error.
 fn is_valid_value(int_str: &str) -> bool {
-    if let Err(_) = int_str.parse::<ValueType>() {
-        return false;
-    }
-    return true;
+    int_str.parse::<UserValue>().is_ok()
 }
 
 /// print help options.
@@ -105,11 +104,11 @@ pub fn print_help() {
 
     print!(
         "  Usage:\n\t{:<35}{}\n\t{:<35}{}\n\t{:<35}{}\n\t{:<35}{}\n\t{:<35}{}\n\t{:<35}{}\n\t{:<35}{}\n\t{:<35}{}\n",
-        PUT, "insert a key-value pair into the database",
+        PUT, "upsert a key-value pair to the database",
         GET, "fetch the associated value of the given key",
         RANGE, "fetch values in the key range from start_key to end_key",
         DELETE, "delete the key-value pair associated with the given key",
-        LOAD, "insert a sequence of key-value pairs stored in the file",
+        LOAD, "upsert a sequence of key-value pairs stored in the file to the database",
         PRINT_STATS, "print the current state of the database",
         QUIT, "terminate the session",
         HELP, "print this help message"

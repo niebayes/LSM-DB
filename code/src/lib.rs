@@ -1,14 +1,32 @@
 // defines the module tree.
 pub mod db {
-    pub mod cmd;
-    pub mod config;
     pub mod db;
-    pub mod types;
     pub mod write_batch;
 }
-mod logging {}
-mod storage {}
-mod transaction {}
+pub mod config {
+    pub mod config;
+}
+mod logging {
+    pub mod db_log;
+    pub mod level_log;
+    pub mod write_log;
+}
+mod storage {
+    pub mod iterator;
+    pub mod level;
+    pub mod memtable;
+    pub mod run;
+    pub mod sstable;
+}
 pub mod util {
     pub mod args;
+    pub mod name;
+    pub mod types;
+}
+pub mod server {
+    pub mod cmd;
+    pub mod server;
+}
+pub mod client {
+    pub mod client;
 }

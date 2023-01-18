@@ -7,5 +7,6 @@ edition = "2021"
 
 [dependencies]
 clap = { version = "4.0.32", features = ["derive"] }
+integer-encoding = "3.0.4"
 log = "0.4"
 rustyline = "10.0.0"
