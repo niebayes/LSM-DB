@@ -1,6 +1,6 @@
 use crate::db::db::Db;
 use crate::server::cmd::{print_help, Command};
-use crate::util::types::{KvEntry, UserKey, UserValue};
+use crate::util::types::{UserEntry, UserKey, UserValue};
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
 use std::fs::File;
@@ -128,7 +128,7 @@ impl Server {
                 reader.read_to_end(&mut buf).unwrap();
 
                 // read kv entries entry by entry.
-                static ENTRY_SIZE: usize = mem::size_of::<KvEntry>();
+                static ENTRY_SIZE: usize = mem::size_of::<UserEntry>();
                 static KEY_SIZE: usize = mem::size_of::<UserKey>();
                 assert!(buf.len() % ENTRY_SIZE == 0);
 

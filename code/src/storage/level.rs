@@ -1,6 +1,8 @@
 use crate::storage::run::Run;
 use crate::util::types::*;
 
+pub struct LevelIterator {}
+
 /// a level in the lsm tree.
 pub struct Level {
     /// level number.

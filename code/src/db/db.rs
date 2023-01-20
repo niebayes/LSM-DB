@@ -2,7 +2,9 @@ use crate::config::config::Config;
 use crate::logging::db_log::DbLogRecord;
 use crate::logging::write_log::WriteLogRecord;
 use crate::storage::level::{default_two_level, Level};
+use crate::storage::lookup_key::LookupKey;
 use crate::storage::memtable::MemTable;
+use crate::storage::table_key::TableKey;
 use crate::util::name::*;
 use crate::util::types::*;
 use std::fs::OpenOptions;
@@ -13,7 +15,7 @@ pub struct Db {
     /// database config.
     cfg: Config,
     /// memtable.
-    mem: Box<dyn MemTable>,
+    mem: MemTable,
     /// all levels in the lsm tree.
     levels: Vec<Level>,
     /// next sequence number to allocate for a write.
@@ -33,7 +35,7 @@ impl Db {
     pub fn new(cfg: Config) -> Db {
         let mut db = Db {
             cfg,
-            mem: Box::new(KvVec::new()),
+            mem: MemTable::new(),
             levels: default_two_level(),
             next_seq_num: SeqNum::default(),
             next_file_num: FileNum::default(),
@@ -74,7 +76,7 @@ impl Db {
         seq_num
     }
 
-    fn get_latest_seq_num(&self) -> SeqNum {
+    fn latest_seq_num(&self) -> SeqNum {
         return self.next_seq_num - 1;
     }
 
@@ -127,7 +129,7 @@ impl Db {
         write_log_file.write(write_log_record.as_slice()).unwrap();
 
         // construct a table key and write it into the memtable.
-        let table_key = TableKey::new_write_key(user_key, user_val, seq_num, write_type);
+        let table_key = TableKey::new(user_key, user_val, seq_num, write_type);
         self.mem.put(table_key);
     }
 }
@@ -138,10 +140,10 @@ impl Db {
         // construct the corresponding table key.
         // the sequence number is used to construct a snapshot of the db wherein all keys considered
         // are keys with sequence number <= the latest sequence number.
-        let table_key = TableKey::new_lookup_key(user_key, self.get_latest_seq_num());
+        let lookup_key = LookupKey::new(user_key, self.latest_seq_num());
 
         // search the key in the memtable.
-        if let Some(val) = self.mem.get(&table_key) {
+        if let Some(val) = self.mem.get(&lookup_key) {
             return Some(val);
         }
 
@@ -156,7 +158,7 @@ impl Db {
         None
     }
 
-    pub fn range(&mut self, start_user_key: UserKey, end_user_key: UserKey) -> Vec<KvEntry> {
+    pub fn range(&mut self, start_user_key: UserKey, end_user_key: UserKey) -> Vec<UserEntry> {
         vec![]
     }
 }

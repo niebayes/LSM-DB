@@ -14,9 +14,11 @@ mod logging {
 mod storage {
     pub mod iterator;
     pub mod level;
+    pub mod lookup_key;
     pub mod memtable;
     pub mod run;
     pub mod sstable;
+    pub mod table_key;
 }
 pub mod util {
     pub mod args;

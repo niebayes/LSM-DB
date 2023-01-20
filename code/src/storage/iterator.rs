@@ -1,7 +1,7 @@
-pub struct Iterator {}
+use crate::storage::table_key::TableKey;
+use crate::util::types::*;
 
-impl Iterator {
-    pub fn new() -> Iterator {
-        Iterator {}
-    }
+pub trait Iterator {
+    fn seek(&mut self, table_key: &TableKey) -> Option<&TableKey>;
+    fn next(&mut self) -> Option<&TableKey>;
 }
