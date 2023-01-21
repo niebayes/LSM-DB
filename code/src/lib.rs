@@ -12,13 +12,15 @@ mod logging {
     pub mod write_log;
 }
 mod storage {
+    pub mod bloom_filter;
+    pub mod fence_pointer;
     pub mod iterator;
     pub mod level;
     pub mod lookup_key;
     pub mod memtable;
     pub mod run;
     pub mod sstable;
-    pub mod table_key;
+    pub mod keys;
 }
 pub mod util {
     pub mod args;

@@ -1,4 +1,4 @@
-use crate::storage::table_key::TableKey;
+use crate::storage::keys::TableKey;
 use crate::util::types::*;
 
 pub trait Iterator {

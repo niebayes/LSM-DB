@@ -1,10 +1,9 @@
 use crate::config::config::Config;
 use crate::logging::db_log::DbLogRecord;
 use crate::logging::write_log::WriteLogRecord;
+use crate::storage::keys::{LookupKey, TableKey};
 use crate::storage::level::{default_two_level, Level};
-use crate::storage::lookup_key::LookupKey;
 use crate::storage::memtable::MemTable;
-use crate::storage::table_key::TableKey;
 use crate::util::name::*;
 use crate::util::types::*;
 use std::fs::OpenOptions;
