@@ -9,7 +9,7 @@ use super::keys::{LookupKey, TableKey};
 /// a level in the lsm tree.
 pub struct Level {
     /// level number.
-    level_num: u32,
+    pub level_num: u32,
     /// min user key stored in the level.
     min_user_key: UserKey,
     /// max user key stored in the level.
@@ -35,7 +35,29 @@ impl Level {
     }
 
     pub fn get(&self, lookup_key: &LookupKey) -> (Option<UserValue>, bool) {
-        (None, true)
+        if lookup_key.user_key >= self.min_user_key && lookup_key.user_key <= self.max_user_key {
+            // collect table keys having the same user key as the lookup key.
+            let mut table_keys = Vec::new();
+            for run in self.runs.iter() {
+                match run.get(lookup_key) {
+                    (Some(table_key), _) => table_keys.push(table_key),
+                    (None, _) => {}
+                }
+            }
+
+            if !table_keys.is_empty() {
+                // the latest table key will be placed at the beginning.
+                table_keys.sort_by(|a, b| a.cmp(b));
+                let table_key = table_keys.first().unwrap();
+
+                match table_key.write_type {
+                    WriteType::Put => return (Some(table_key.user_val), false),
+                    WriteType::Delete => return (Some(table_key.user_val), true),
+                    other => panic!("Unexpected write type: {}", other as u8),
+                }
+            }
+        }
+        (None, false)
     }
 
     pub fn iter(&self) -> Result<LevelIterator, ()> {
@@ -54,6 +76,7 @@ impl Level {
 pub struct LevelIterator {
     /// iterators of all runs in the level.
     run_iters: BinaryHeap<RunIterator>,
+    /// currently pointed-to table key.
     curr_table_key: Option<TableKey>,
 }
 

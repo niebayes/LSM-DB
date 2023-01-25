@@ -9,9 +9,9 @@ pub trait TableKeyIterator {
     fn valid(&self) -> bool;
 }
 
-pub type TableKeyIteratorType = Box<dyn TableKeyIterator>;
+pub type TableKeyIteratorType<'a> = Box<dyn TableKeyIterator + 'a>;
 
-impl PartialEq for TableKeyIteratorType {
+impl<'a> PartialEq for TableKeyIteratorType<'a> {
     fn eq(&self, other: &Self) -> bool {
         match (self.curr(), other.curr()) {
             (Some(head), Some(other_head)) => return head == other_head,
@@ -21,9 +21,9 @@ impl PartialEq for TableKeyIteratorType {
     }
 }
 
-impl Eq for TableKeyIteratorType {}
+impl<'a> Eq for TableKeyIteratorType<'a> {}
 
-impl PartialOrd for TableKeyIteratorType {
+impl<'a> PartialOrd for TableKeyIteratorType<'a> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         match (self.curr(), other.curr()) {
             (Some(head), Some(other_head)) => return head.partial_cmp(&other_head),
@@ -34,7 +34,7 @@ impl PartialOrd for TableKeyIteratorType {
     }
 }
 
-impl Ord for TableKeyIteratorType {
+impl<'a> Ord for TableKeyIteratorType<'a> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         match (self.curr(), other.curr()) {
             (Some(head), Some(other_head)) => return head.cmp(&other_head),

@@ -1,15 +1,5 @@
 const MB: u32 = 4096;
 
-/// in-memory indexing data structure.
-pub enum InMemoryIndex {
-    /// skip list.
-    SkipList,
-    /// b+ tree.
-    BPlusTree,
-    /// adaptive radix tree.
-    AdaptiveRadixTree,
-}
-
 /// major compaction strategies.
 /// major compaction strategy is defined by the max number of sorted runs in a level.
 /// if the max number of sorted runs in a level is limited to 1, then this level adopts
@@ -30,21 +20,19 @@ pub enum MajorCompactionStrategy {
 /// database configurations.
 pub struct Config {
     /// max lsm tree level.
-    max_lsm_tree_level: i32,
+    pub max_lsm_tree_level: usize,
     /// fanout = current level capacity / previous level capacity.
-    fanout: i32,
+    pub fanout: usize,
     /// memtable capacity in bytes.
-    memtable_capacity: u32,
+    pub memtable_capacity: usize,
     /// sstable capacity in bytes.
-    sstable_capacity: u32,
+    pub sstable_capacity: usize,
     /// level 0 capacity in number of sstables.
-    level_zero_capacity: u32,
-    /// in-memory indexing data structure.
-    in_mem_index: InMemoryIndex,
+    pub level_zero_capacity: usize,
     /// major compaction strategy.
-    major_compaction_strategy: MajorCompactionStrategy,
+    pub major_compaction_strategy: MajorCompactionStrategy,
     /// batch writes in memory before written to memtable if true.
-    batch_write: bool,
+    pub batch_write: bool,
 }
 
 impl Default for Config {
@@ -53,10 +41,9 @@ impl Default for Config {
         Self {
             max_lsm_tree_level: 2,
             fanout: 10,
-            memtable_capacity: 4 * MB,
-            sstable_capacity: 16 * MB,
+            memtable_capacity: 4 * MB as usize,
+            sstable_capacity: 16 * MB as usize,
             level_zero_capacity: 4,
-            in_mem_index: InMemoryIndex::SkipList,
             major_compaction_strategy: MajorCompactionStrategy::Leveled,
             batch_write: false,
         }

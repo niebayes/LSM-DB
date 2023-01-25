@@ -1,5 +1,5 @@
 use crate::storage::sstable::{SSTable, SSTableIterator};
-use crate::util::types::UserKey;
+use crate::util::types::{UserKey, UserValue};
 use std::cmp::Ordering;
 
 use super::iterator::TableKeyIterator;
@@ -11,9 +11,9 @@ use super::keys::*;
 /// (2) keys are non-overlapping.
 pub struct Run {
     /// min user key stored in the run.
-    min_user_key: UserKey,
+    pub min_user_key: UserKey,
     /// max user key stored in the run.
-    max_user_key: UserKey,
+    pub max_user_key: UserKey,
     /// sstables in the run.
     /// the sstables are sorted by the max user key, i.e. sstables with lower max user keys are placed first.
     sstables: Vec<SSTable>,
@@ -25,6 +25,25 @@ impl Run {
             min_user_key: UserKey::MAX,
             max_user_key: UserKey::MIN,
             sstables: Vec::new(),
+        }
+    }
+
+    pub fn get(&self, lookup_key: &LookupKey) -> (Option<TableKey>, bool) {
+        if lookup_key.user_key >= self.min_user_key && lookup_key.user_key <= self.max_user_key {
+            if let Some(sstable) = self.binary_search(lookup_key) {
+                return sstable.get(lookup_key);
+            }
+        }
+        (None, false)
+    }
+
+    fn binary_search(&self, lookup_key: &LookupKey) -> Option<&SSTable> {
+        match self
+            .sstables
+            .binary_search_by(|sstable| sstable.max_user_key.cmp(&lookup_key.user_key))
+        {
+            Ok(i) => return self.sstables.get(i),
+            Err(i) => return self.sstables.get(i - 1),
         }
     }
 

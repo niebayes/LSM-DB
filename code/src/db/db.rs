@@ -132,6 +132,10 @@ impl Db {
         // construct a table key and write it into the memtable.
         let table_key = TableKey::new(user_key, user_val, seq_num, write_type);
         self.mem.put(table_key);
+
+        if self.mem.size() >= self.cfg.memtable_capacity {
+            self.minor_compaction();
+        }
     }
 }
 
@@ -172,13 +176,72 @@ impl Db {
     }
 
     pub fn range(&mut self, start_user_key: UserKey, end_user_key: UserKey) -> Vec<UserEntry> {
+        let snapshot_seq_num = self.latest_seq_num();
+
+        // entry container to hold all visible entries found within the key range.
+        let mut entries = Vec::new();
+
         // iterator container to hold iterators from the memtable and all levels of sstables.
-        let iters: BinaryHeap<TableKeyIteratorType> = BinaryHeap::new();
-        vec![]
+        let mut iters: BinaryHeap<TableKeyIteratorType> = BinaryHeap::new();
+
+        iters.push(Box::new(self.mem.iter()));
+
+        for level in self.levels.iter() {
+            if let Ok(iter) = level.iter() {
+                iters.push(Box::new(iter));
+            } else {
+                log::error!(
+                    "Failed to construct an iterator of level {}",
+                    level.level_num
+                );
+            }
+        }
+
+        let mut last_user_key = None;
+        // loop inv: there's at least one iterator in the heap.
+        while let Some(mut iter) = iters.pop() {
+            // proceed if the iterator is not exhausted.
+            if let Some(table_key) = iter.next() {
+                // early termination: the current key has a user key equal to or greater than the end user key.
+                if table_key.user_key >= end_user_key {
+                    break;
+                }
+
+                // only the latest visible table key for each user key is collected.
+                if last_user_key.is_none() || table_key.user_key != last_user_key.unwrap() {
+                    // ensure the table key has a user key within the query range and it's visible to the snapshot.
+                    if table_key.user_key >= start_user_key
+                        && table_key.user_key < end_user_key
+                        && table_key.seq_num <= snapshot_seq_num
+                    {
+                        match table_key.write_type {
+                            // only non-deleted keys are collected.
+                            WriteType::Put => {
+                                entries.push(UserEntry {
+                                    key: table_key.user_key,
+                                    val: table_key.user_val,
+                                });
+                                last_user_key = Some(table_key.user_key);
+                            }
+                            // skip deleted keys.
+                            WriteType::Delete => {}
+                            other => panic!("Unexpected write type: {}", other as u8),
+                        }
+                    }
+                }
+                iters.push(iter);
+            }
+        }
+
+        entries
     }
 }
 /// db compaction implementation.
-impl Db {}
+impl Db {
+    fn minor_compaction(&mut self) {}
+
+    fn major_compaction(&mut self) {}
+}
 
 /// db recover implementation.
 impl Db {
