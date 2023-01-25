@@ -1,11 +1,13 @@
 use crate::config::config::Config;
 use crate::logging::db_log::DbLogRecord;
 use crate::logging::write_log::WriteLogRecord;
+use crate::storage::iterator::*;
 use crate::storage::keys::{LookupKey, TableKey};
 use crate::storage::level::{default_two_level, Level};
 use crate::storage::memtable::MemTable;
 use crate::util::name::*;
 use crate::util::types::*;
+use std::collections::{BinaryHeap, HashMap, LinkedList};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::vec;
@@ -135,22 +137,34 @@ impl Db {
 
 /// db read implementation.
 impl Db {
+    /// point query the associated value in the database.
     pub fn get(&mut self, user_key: UserKey) -> Option<UserValue> {
-        // construct the corresponding table key.
-        // the sequence number is used to construct a snapshot of the db wherein all keys considered
-        // are keys with sequence number <= the latest sequence number.
+        // each query is on a snapshot of the database where a snapshot contains all keys with sequence numbers
+        // less than or equal to the snapshot sequence number.
         let lookup_key = LookupKey::new(user_key, self.latest_seq_num());
 
         // search the key in the memtable.
-        if let Some(val) = self.mem.get(&lookup_key) {
-            return Some(val);
-        }
+        match self.mem.get(&lookup_key) {
+            // the key exists and is not deleted.
+            (Some(user_val), false) => return Some(user_val),
+            // the key exists but is deleted.
+            (Some(_), true) => return None,
+            // the key does not exist, proceed to searching in sstables.
+            (None, _) => {}
+        };
 
         // search the key in the sstables.
-        for level in self.levels.iter_mut() {
-            if let Some(val) = level.get(user_key) {
-                return Some(val);
-            }
+        for level in self.levels.iter() {
+            // keys in shallower levels shadow keys having the same user keys in deeper levels,
+            // and hence the searching terminates as soon as the key is found.
+            match level.get(&lookup_key) {
+                // the key exists and is not deleted.
+                (Some(user_val), false) => return Some(user_val),
+                // the key exists but is deleted.
+                (Some(_), true) => return None,
+                // the key does not exist, proceed to searching in the next level.
+                (None, _) => {}
+            };
         }
 
         // the key does not exist.
@@ -158,10 +172,11 @@ impl Db {
     }
 
     pub fn range(&mut self, start_user_key: UserKey, end_user_key: UserKey) -> Vec<UserEntry> {
+        // iterator container to hold iterators from the memtable and all levels of sstables.
+        let iters: BinaryHeap<TableKeyIteratorType> = BinaryHeap::new();
         vec![]
     }
 }
-
 /// db compaction implementation.
 impl Db {}
 

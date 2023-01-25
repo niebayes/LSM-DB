@@ -1,5 +1,5 @@
 /// write type.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum WriteType {
     Put,
     Delete,

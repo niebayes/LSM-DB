@@ -1,11 +1,14 @@
 use crate::util::types::*;
+use integer_encoding::*;
 use std::cmp::Ordering;
+use std::io;
 use std::mem;
 
 /// table key type.
 /// table key = user key + seq num + write type + user val.
 /// user key and sequence number are necessaties for a table key, so they are placed at the front.
 /// write type and user value may not be specified for lookup, so they are placed at the tail.
+#[derive(Clone)]
 pub struct TableKey {
     /// user key.
     pub user_key: UserKey,
@@ -15,6 +18,17 @@ pub struct TableKey {
     pub write_type: WriteType,
     /// user value.
     pub user_val: UserValue,
+}
+
+impl Default for TableKey {
+    fn default() -> Self {
+        Self {
+            user_key: UserKey::default(),
+            seq_num: SeqNum::default(),
+            write_type: WriteType::NotSpecified,
+            user_val: UserValue::default(),
+        }
+    }
 }
 
 pub const TABLE_KEY_SIZE: usize = mem::size_of::<UserKey>()
@@ -35,6 +49,30 @@ impl TableKey {
             seq_num,
             write_type,
         }
+    }
+
+    pub fn encode_to_bytes(&self) -> Vec<u8> {
+        let mut encoded = Vec::new();
+        encoded.write_varint(self.user_key).unwrap();
+        encoded.write_varint(self.seq_num).unwrap();
+        encoded.write_varint(self.write_type as u8).unwrap();
+        encoded.write_varint(self.user_val).unwrap();
+        encoded
+    }
+
+    pub fn decode_from_bytes(bytes: &Vec<u8>) -> Result<Self, io::Error> {
+        let mut reader = bytes.as_slice();
+        let mut table_key = TableKey::default();
+        table_key.user_key = reader.read_varint()?;
+        table_key.seq_num = reader.read_varint()?;
+        let write_type = match reader.read_varint::<u8>()? {
+            0 => WriteType::Put,
+            1 => WriteType::Delete,
+            other => panic!("Unexpected write type: {}", other),
+        };
+        table_key.write_type = write_type;
+        table_key.user_val = reader.read_varint()?;
+        Ok(table_key)
     }
 }
 
