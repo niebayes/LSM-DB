@@ -1,31 +1,31 @@
+use std::fmt::Display;
+
 /// write type.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum WriteType {
     Put,
     Delete,
-    NotSpecified,
+    Empty,
 }
 
-/// level mapping update type.
-/// level mapping: which sstable goes to / leave from which level.
-#[derive(Clone, Copy)]
-pub enum UpdateType {
-    /// add sstable x to level y.
-    Add,
-    // remove sstable x from level y.
-    Remove,
-    /// not specified.
-    NotSpecified,
+impl Display for WriteType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WriteType::Put => write!(f, "Put"),
+            WriteType::Delete => write!(f, "Delete"),
+            WriteType::Empty => write!(f, "Empty"),
+        }
+    }
 }
 
 /// sequence number type.
-pub type SeqNum = u64;
+pub type SeqNum = usize;
 
 /// file number type.
-pub type FileNum = u64;
+pub type FileNum = usize;
 
 /// level number type.
-pub type LevelNum = u8;
+pub type LevelNum = usize;
 
 /// user key type.
 pub type UserKey = i32;

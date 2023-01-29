@@ -9,4 +9,5 @@ edition = "2021"
 clap = { version = "4.0.32", features = ["derive"] }
 integer-encoding = "3.0.4"
 log = "0.4"
+rand = "0.8.5"
 rustyline = "10.0.0"

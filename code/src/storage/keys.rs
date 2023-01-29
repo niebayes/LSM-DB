@@ -25,7 +25,7 @@ impl Default for TableKey {
         Self {
             user_key: UserKey::default(),
             seq_num: SeqNum::default(),
-            write_type: WriteType::NotSpecified,
+            write_type: WriteType::Empty,
             user_val: UserValue::default(),
         }
     }
@@ -39,9 +39,9 @@ pub const TABLE_KEY_SIZE: usize = mem::size_of::<UserKey>()
 impl TableKey {
     pub fn new(
         user_key: UserKey,
-        user_val: UserValue,
         seq_num: SeqNum,
         write_type: WriteType,
+        user_val: UserValue,
     ) -> Self {
         Self {
             user_key,
@@ -137,7 +137,7 @@ impl LookupKey {
         TableKey {
             user_key: self.user_key,
             seq_num: self.seq_num,
-            write_type: WriteType::NotSpecified,
+            write_type: WriteType::Empty,
             user_val: UserValue::default(),
         }
     }

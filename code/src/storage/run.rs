@@ -1,6 +1,6 @@
 use crate::storage::sstable::{SSTable, SSTableIterator};
-use crate::util::types::{UserKey, UserValue};
 use std::cmp::Ordering;
+use std::rc::Rc;
 
 use super::iterator::TableKeyIterator;
 use super::keys::*;
@@ -10,26 +10,32 @@ use super::keys::*;
 /// (1) keys are sorted.
 /// (2) keys are non-overlapping.
 pub struct Run {
-    /// min user key stored in the run.
-    pub min_user_key: UserKey,
-    /// max user key stored in the run.
-    pub max_user_key: UserKey,
     /// sstables in the run.
     /// the sstables are sorted by the max user key, i.e. sstables with lower max user keys are placed first.
-    sstables: Vec<SSTable>,
+    pub sstables: Vec<Rc<SSTable>>,
+    /// min table key stored in the run.
+    pub min_table_key: TableKey,
+    /// max table key stored in the run.
+    pub max_table_key: TableKey,
 }
 
 impl Run {
-    pub fn new() -> Self {
+    pub fn new(
+        sstables: Vec<Rc<SSTable>>,
+        min_table_key: TableKey,
+        max_table_key: TableKey,
+    ) -> Self {
         Self {
-            min_user_key: UserKey::MAX,
-            max_user_key: UserKey::MIN,
-            sstables: Vec::new(),
+            sstables,
+            min_table_key,
+            max_table_key,
         }
     }
 
     pub fn get(&self, lookup_key: &LookupKey) -> (Option<TableKey>, bool) {
-        if lookup_key.user_key >= self.min_user_key && lookup_key.user_key <= self.max_user_key {
+        if lookup_key.as_table_key() >= self.min_table_key
+            && lookup_key.as_table_key() <= self.max_table_key
+        {
             if let Some(sstable) = self.binary_search(lookup_key) {
                 return sstable.get(lookup_key);
             }
@@ -37,13 +43,25 @@ impl Run {
         (None, false)
     }
 
-    fn binary_search(&self, lookup_key: &LookupKey) -> Option<&SSTable> {
+    fn binary_search(&self, lookup_key: &LookupKey) -> Option<Rc<SSTable>> {
         match self
             .sstables
-            .binary_search_by(|sstable| sstable.max_user_key.cmp(&lookup_key.user_key))
+            .binary_search_by(|sstable| sstable.max_table_key.cmp(&lookup_key.as_table_key()))
         {
-            Ok(i) => return self.sstables.get(i),
-            Err(i) => return self.sstables.get(i - 1),
+            Ok(i) => {
+                if let Some(sstable) = self.sstables.get(i) {
+                    Some(sstable.clone())
+                } else {
+                    None
+                }
+            }
+            Err(i) => {
+                if let Some(sstable) = self.sstables.get(i - 1) {
+                    Some(sstable.clone())
+                } else {
+                    None
+                }
+            }
         }
     }
 
@@ -57,6 +75,32 @@ impl Run {
             curr_table_key: None,
             curr_sstable_idx: 0,
         })
+    }
+}
+
+/// run write implementation.
+impl Run {
+    /// return the total size in bytes of all sstables stored in the run.
+    pub fn size(&self) -> usize {
+        let mut total = 0;
+        for sstable in self.sstables.iter() {
+            total += sstable.file_size;
+        }
+        total
+    }
+
+    /// add an sstable into the run.
+    pub fn add_sstable(&mut self, sstable: Rc<SSTable>) {
+        self.sstables.push(sstable);
+    }
+
+    /// remove the sstable at the index idx.
+    /// return true if the run becomes empty after the removal.
+    pub fn remove_sstable(&mut self, idx: usize) -> bool {
+        self.sstables.remove(idx);
+
+        // update key range.
+        self.sstables.is_empty()
     }
 }
 

@@ -1,91 +1,107 @@
-use crate::config::config::Config;
-use crate::logging::db_log::DbLogRecord;
-use crate::logging::write_log::WriteLogRecord;
+use rand::Rng;
+
 use crate::storage::iterator::*;
 use crate::storage::keys::{LookupKey, TableKey};
-use crate::storage::level::{default_two_level, Level};
+use crate::storage::level::{Level, LevelState};
 use crate::storage::memtable::MemTable;
-use crate::util::name::*;
+use crate::storage::run::Run;
+use crate::storage::sstable::*;
 use crate::util::types::*;
-use std::collections::{BinaryHeap, HashMap, LinkedList};
-use std::fs::OpenOptions;
-use std::io::Write;
+use std::cmp;
+use std::collections::BinaryHeap;
+use std::rc::Rc;
 use std::vec;
+
+/// database configurations.
+pub struct Config {
+    /// fanout = current level capacity / previous level capacity.
+    pub fanout: usize,
+    /// memtable size capacity in bytes
+    pub memtable_size_capacity: usize,
+    /// sstable size capacity in bytes.
+    pub sstable_size_capacity: usize,
+    /// run capacity.
+    pub run_capacity: usize,
+    /// max number of levels.
+    pub max_levels: usize,
+}
+
+impl Default for Config {
+    /// create a default config.
+    fn default() -> Self {
+        Self {
+            fanout: 10,
+            memtable_size_capacity: 4 * 1024,
+            sstable_size_capacity: 16 * 1024,
+            run_capacity: 4,
+            max_levels: 4,
+        }
+    }
+}
+
+pub struct FileNumDispatcher {
+    /// next file number to allocate for a file.
+    next_file_num: FileNum,
+}
+
+impl FileNumDispatcher {
+    fn new() -> Self {
+        Self { next_file_num: 0 }
+    }
+
+    pub fn alloc_file_num(&mut self) -> FileNum {
+        let file_num = self.next_file_num;
+        self.next_file_num += 1;
+        file_num
+    }
+}
 
 pub struct Db {
     /// database config.
-    cfg: Config,
+    pub cfg: Config,
     /// memtable.
     mem: MemTable,
     /// all levels in the lsm tree.
     levels: Vec<Level>,
     /// next sequence number to allocate for a write.
     next_seq_num: SeqNum,
-    /// next file number to allocate for a file.
-    next_file_num: FileNum,
-    /// file number of the write log file.
-    write_log_file_num: Option<FileNum>,
-    /// file number of the database log file.
-    db_log_file_num: Option<FileNum>,
-    /// file number of the level mapping log file.
-    level_log_file_num: Option<FileNum>,
+    /// file number dispatcher.
+    file_num_dispatcher: Rc<FileNumDispatcher>,
 }
 
-/// db miscs implementation.
 impl Db {
     pub fn new(cfg: Config) -> Db {
-        let mut db = Db {
+        // size capacity of the level 0 = run capacity of the level 0 * memtable size capactiy.
+        let default_level_0 = Level::new(
+            0,
+            cfg.run_capacity,
+            cfg.run_capacity * cfg.memtable_size_capacity,
+        );
+
+        Db {
             cfg,
             mem: MemTable::new(),
-            levels: default_two_level(),
-            next_seq_num: SeqNum::default(),
-            next_file_num: FileNum::default(),
-            write_log_file_num: None,
-            db_log_file_num: None,
-            level_log_file_num: None,
-        };
-
-        // crash recovery.
-        db.recover();
-
-        // allocate a file number for the write log file if not allocated so far.
-        if db.write_log_file_num.is_none() {
-            db.write_log_file_num = Some(db.alloc_file_num());
+            levels: vec![default_level_0],
+            next_seq_num: 0,
+            file_num_dispatcher: Rc::new(FileNumDispatcher::new()),
         }
-
-        // allocate a file number for the db log file if not allocated so far.
-        if db.db_log_file_num.is_none() {
-            db.db_log_file_num = Some(db.alloc_file_num());
-        }
-
-        // allocate a file number for the db log file if not allocated so far.
-        if db.level_log_file_num.is_none() {
-            db.level_log_file_num = Some(db.alloc_file_num());
-        }
-
-        // TODO: add more necessary fields to the DbLogRecord struct.
-        // TODO: write a db log record.
-
-        db
     }
 
-    pub fn print_stats(&mut self) {}
-
-    fn alloc_seq_num(&mut self) -> SeqNum {
+    pub fn alloc_seq_num(&mut self) -> SeqNum {
         let seq_num = self.next_seq_num;
         self.next_seq_num += 1;
         seq_num
     }
 
     fn latest_seq_num(&self) -> SeqNum {
-        return self.next_seq_num - 1;
+        if self.next_seq_num > 0 {
+            self.next_seq_num - 1
+        } else {
+            0
+        }
     }
 
-    fn alloc_file_num(&mut self) -> SeqNum {
-        let file_num = self.next_file_num;
-        self.next_file_num += 1;
-        file_num
-    }
+    pub fn print_stats(&mut self) {}
 }
 
 /// db write implementation.
@@ -99,41 +115,10 @@ impl Db {
     }
 
     fn write(&mut self, user_key: UserKey, user_val: UserValue, write_type: WriteType) {
-        // allocate a new sequence number for the write.
-        let seq_num = self.alloc_seq_num();
-
-        // write a db log record.
-        let db_log_record = DbLogRecord::new()
-            .set_next_seq_num(self.next_seq_num)
-            .encode_to_bytes();
-
-        let mut db_log_file = OpenOptions::new()
-            .append(true)
-            .open(db_log_file_name(self.db_log_file_num.unwrap()))
-            .unwrap();
-
-        db_log_file.write(db_log_record.as_slice()).unwrap();
-
-        // write a write log record.
-        let write_log_record = WriteLogRecord::new()
-            .set_user_key(user_key)
-            .set_user_val(user_val)
-            .set_write_type(write_type)
-            .set_seq_num(seq_num)
-            .encode_to_bytes();
-
-        let mut write_log_file = OpenOptions::new()
-            .append(true)
-            .open(write_log_file_name(self.write_log_file_num.unwrap()))
-            .unwrap();
-
-        write_log_file.write(write_log_record.as_slice()).unwrap();
-
-        // construct a table key and write it into the memtable.
-        let table_key = TableKey::new(user_key, user_val, seq_num, write_type);
+        let table_key = TableKey::new(user_key, self.alloc_seq_num(), write_type, user_val);
         self.mem.put(table_key);
 
-        if self.mem.size() >= self.cfg.memtable_capacity {
+        if self.mem.size() >= self.cfg.memtable_size_capacity {
             self.minor_compaction();
         }
     }
@@ -143,9 +128,8 @@ impl Db {
 impl Db {
     /// point query the associated value in the database.
     pub fn get(&mut self, user_key: UserKey) -> Option<UserValue> {
-        // each query is on a snapshot of the database where a snapshot contains all keys with sequence numbers
-        // less than or equal to the snapshot sequence number.
-        let lookup_key = LookupKey::new(user_key, self.latest_seq_num());
+        let snapshot_seq_num = self.latest_seq_num();
+        let lookup_key = LookupKey::new(user_key, snapshot_seq_num);
 
         // search the key in the memtable.
         match self.mem.get(&lookup_key) {
@@ -157,7 +141,7 @@ impl Db {
             (None, _) => {}
         };
 
-        // search the key in the sstables.
+        // search the key in the lsm tree.
         for level in self.levels.iter() {
             // keys in shallower levels shadow keys having the same user keys in deeper levels,
             // and hence the searching terminates as soon as the key is found.
@@ -175,27 +159,20 @@ impl Db {
         None
     }
 
+    /// range query the values associated with keys in the key range [start_user_key, end_user_key).
     pub fn range(&mut self, start_user_key: UserKey, end_user_key: UserKey) -> Vec<UserEntry> {
         let snapshot_seq_num = self.latest_seq_num();
-
-        // entry container to hold all visible entries found within the key range.
-        let mut entries = Vec::new();
+        let start_lookup_key = LookupKey::new(start_user_key, snapshot_seq_num);
+        let end_lookup_key = LookupKey::new(end_user_key, snapshot_seq_num);
 
         // iterator container to hold iterators from the memtable and all levels of sstables.
         let mut iters: BinaryHeap<TableKeyIteratorType> = BinaryHeap::new();
-
         iters.push(Box::new(self.mem.iter()));
-
         for level in self.levels.iter() {
-            if let Ok(iter) = level.iter() {
-                iters.push(Box::new(iter));
-            } else {
-                log::error!(
-                    "Failed to construct an iterator of level {}",
-                    level.level_num
-                );
-            }
+            iters.push(Box::new(level.iter().unwrap()));
         }
+
+        let mut entries = Vec::new();
 
         let mut last_user_key = None;
         // loop inv: there's at least one iterator in the heap.
@@ -210,9 +187,8 @@ impl Db {
                 // only the latest visible table key for each user key is collected.
                 if last_user_key.is_none() || table_key.user_key != last_user_key.unwrap() {
                     // ensure the table key has a user key within the query range and it's visible to the snapshot.
-                    if table_key.user_key >= start_user_key
-                        && table_key.user_key < end_user_key
-                        && table_key.seq_num <= snapshot_seq_num
+                    if table_key >= start_lookup_key.as_table_key()
+                        && table_key < end_lookup_key.as_table_key()
                     {
                         match table_key.write_type {
                             // only non-deleted keys are collected.
@@ -223,12 +199,12 @@ impl Db {
                                 });
                                 last_user_key = Some(table_key.user_key);
                             }
-                            // skip deleted keys.
-                            WriteType::Delete => {}
-                            other => panic!("Unexpected write type: {}", other as u8),
+                            _ => {}
                         }
                     }
                 }
+
+                // push back the iterator into the heap.
                 iters.push(iter);
             }
         }
@@ -236,14 +212,243 @@ impl Db {
         entries
     }
 }
-/// db compaction implementation.
-impl Db {
-    fn minor_compaction(&mut self) {}
 
-    fn major_compaction(&mut self) {}
+struct SSTableInfo {
+    sstable: Rc<SSTable>,
+    /// which level this sstable belongs to.
+    level_num: usize,
+    /// which run this sstable belongs to.
+    run_idx: usize,
+    /// the index of the sstable at the run.
+    sstable_idx: usize,
 }
 
-/// db recover implementation.
+/// the context of a major compaction.
+struct CompactionContext {
+    /// min user key of the current level.
+    min_user_key: UserKey,
+    /// max user key of the current level.
+    max_user_key: UserKey,
+    /// compaction inputs, aka. all sstables involved in the compaction.
+    inputs: Vec<SSTableInfo>,
+}
+
+impl CompactionContext {
+    fn new(base: SSTableInfo) -> Self {
+        Self {
+            min_user_key: base.sstable.min_table_key.user_key,
+            max_user_key: base.sstable.max_table_key.user_key,
+            inputs: vec![base],
+        }
+    }
+
+    /// return true if the key range of the given sstable overlaps with the key range of the base sstable.
+    fn overlap_with_base(&self, other: &SSTable) -> bool {
+        let base = self.inputs.first().unwrap().sstable;
+        let (min, max) = (base.min_table_key.user_key, base.max_table_key.user_key);
+        let (other_min, other_max) = (other.min_table_key.user_key, other.max_table_key.user_key);
+
+        (min >= other_min && min <= other_max)
+            || (max >= other_min && max <= other_max)
+            || (min >= other_min && max <= other_max)
+            || (other_min >= min && other_max <= max)
+    }
+
+    /// return true if the key range of the given sstable overlaps with the key range of the current the level.
+    fn overlap_with_curr_level(&self, other: &SSTable) -> bool {
+        let (min, max) = (self.min_user_key, self.max_user_key);
+        let (other_min, other_max) = (other.min_table_key.user_key, other.max_table_key.user_key);
+
+        (min >= other_min && min <= other_max)
+            || (max >= other_min && max <= other_max)
+            || (min >= other_min && max <= other_max)
+            || (other_min >= min && other_max <= max)
+    }
+
+    fn add_input(&mut self, input: SSTableInfo) {
+        // try to extend the key range of the current level.
+        if input.level_num == self.inputs.first().unwrap().level_num {
+            self.min_user_key = cmp::min(self.min_user_key, input.sstable.min_table_key.user_key);
+            self.max_user_key = cmp::max(self.max_user_key, input.sstable.max_table_key.user_key);
+        }
+        self.inputs.push(input);
+    }
+}
+
+/// db compaction implementation.
 impl Db {
-    fn recover(&mut self) {}
+    /// flush the table keys in memtable to a new sstable.
+    fn minor_compaction(&mut self) {
+        let iter = self.mem.iter();
+        // TODO: merge SSTableWriter and SSTableWriterBatch.
+        let sstable_writer_batch = SSTableWriterBatch::new(self.file_num_dispatcher.clone());
+        while let Some(table_key) = iter.next() {
+            sstable_writer_batch.push(table_key);
+        }
+        let sstables = sstable_writer_batch.done();
+
+        let run = Run::new(
+            sstables,
+            sstables[0].min_table_key.clone(),
+            sstables[0].max_table_key.clone(),
+        );
+
+        // add this run to level 0.
+        self.levels[0].add_run(run);
+
+        self.check_level_state();
+    }
+
+    fn check_level_state(&mut self) {
+        let mut level_num = 0;
+        while level_num < self.cfg.max_levels {
+            if let Some(level) = self.levels.get_mut(level_num) {
+                if let LevelState::ExceedSizeCapacity | LevelState::ExceedRunCapacity =
+                    level.state()
+                {
+                    self.major_compaction(level_num);
+                    // do not increment the level number since a level may exceed
+                    // the size capacity and the run capacity at the same time.
+                } else {
+                    level_num += 1;
+                }
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn select_compaction_base(&self, level: &Level) -> SSTableInfo {
+        // randomly select an sstable from a random run in the level with level number level_num.
+        let level_num = level.level_num;
+        let level = self.levels.get(level_num).unwrap();
+        let run_idx = rand::thread_rng().gen_range(0..level.runs.len());
+        let run = level.runs.get(run_idx).unwrap();
+        let sstable_idx = rand::thread_rng().gen_range(0..run.sstables.len());
+        let sstable = run.sstables.get(sstable_idx).unwrap();
+
+        SSTableInfo {
+            sstable: sstable.clone(),
+            level_num,
+            run_idx,
+            sstable_idx,
+        }
+    }
+
+    fn major_compaction(&mut self, level_num: LevelNum) {
+        // select the base sstable in the current level.
+        let curr_level = self.levels.get_mut(level_num).unwrap();
+        let mut ctx = CompactionContext::new(self.select_compaction_base(curr_level));
+        let base = ctx.inputs.first().unwrap();
+
+        // TODO: rewrite sstable removal logic. Ignore crash recovery for now.
+
+        // collect overlapping sstables in the current level.
+        for (run_idx, run) in curr_level.runs.iter().enumerate() {
+            for (sstable_idx, sstable) in run.sstables.iter().enumerate() {
+                // skip the base sstable itself.
+                if base.run_idx == run_idx && base.sstable_idx == sstable_idx {
+                    continue;
+                }
+
+                if ctx.overlap_with_base(sstable) {
+                    ctx.add_input(SSTableInfo {
+                        sstable: sstable.clone(),
+                        level_num: curr_level.level_num,
+                        run_idx,
+                        sstable_idx,
+                    })
+                }
+            }
+        }
+
+        if let LevelState::ExceedRunCapacity = curr_level.state() {
+            self.horizontal_compaction(&mut ctx);
+        } else {
+            self.vertical_compaction(&mut ctx);
+        }
+
+        self.update_manifest(&ctx);
+    }
+
+    fn merge(&mut self, ctx: &CompactionContext) -> Run {
+        let mut iters: BinaryHeap<TableKeyIteratorType> = BinaryHeap::new();
+        for input in ctx.inputs.iter() {
+            iters.push(Box::new(input.sstable.iter().unwrap()));
+        }
+
+        let mut sstable_writer_batch = SSTableWriterBatch::new(self.file_num_dispatcher.clone());
+
+        let mut last_user_key = None;
+        let mut min_table_key = None;
+        let mut max_table_key = None;
+        while let Some(iter) = iters.pop() {
+            if let Some(table_key) = iter.next() {
+                if last_user_key.is_none() || last_user_key.unwrap() != table_key.user_key {
+                    sstable_writer_batch.push(table_key);
+
+                    // FIXME: clone to tackle ownership problems.
+                    if min_table_key.is_none() {
+                        min_table_key = Some(table_key);
+                    } else {
+                        min_table_key = Some(cmp::min(min_table_key.unwrap(), table_key));
+                    }
+
+                    if max_table_key.is_none() {
+                        max_table_key = Some(table_key);
+                    } else {
+                        max_table_key = Some(cmp::max(max_table_key.unwrap(), table_key));
+                    }
+
+                    last_user_key = Some(table_key.user_key);
+                }
+
+                iters.push(iter);
+            }
+        }
+
+        Run::new(
+            sstable_writer_batch.done(),
+            min_table_key.unwrap(),
+            max_table_key.unwrap(),
+        )
+    }
+
+    /// merge inputs into a run and merge this run with another run in the current level.
+    fn horizontal_compaction(&mut self, ctx: &mut CompactionContext) {}
+
+    /// merge inputs into a run and insert this run into the next level.
+    /// might incur cascading vertical or horizontal compaction in the the next level.
+    fn vertical_compaction(&mut self, ctx: &mut CompactionContext) {
+        let curr_level = self
+            .levels
+            .get_mut(ctx.inputs.first().unwrap().level_num)
+            .unwrap();
+
+        // create the next level if necessary.
+        if self.levels.get(curr_level.level_num + 1).is_none() {
+            self.levels.push(Level::new(
+                curr_level.level_num + 1,
+                curr_level.run_capcity,
+                curr_level.size_capacity * self.cfg.fanout,
+            ))
+        }
+        let next_level = self.levels.get_mut(curr_level.level_num + 1).unwrap();
+
+        // collect overlapping sstables in the next level.
+        for (run_idx, run) in next_level.runs.iter().enumerate() {
+            for (sstable_idx, sstable) in run.sstables.iter().enumerate() {
+                if ctx.overlap_with_curr_level(sstable) {
+                    ctx.add_input(SSTableInfo {
+                        sstable: sstable.clone(),
+                        level_num: next_level.level_num,
+                        run_idx,
+                        sstable_idx,
+                    })
+                }
+            }
+        }
+    }
+
+    fn update_manifest(&mut self, ctx: &CompactionContext) {}
 }

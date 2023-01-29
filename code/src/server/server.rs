@@ -30,9 +30,9 @@ impl Server {
         // attempt to load history from file ./.cmd_history if it exists.
         let _ = editor.load_history(&history_path);
         Server {
-            db: db,
-            editor: editor,
-            history_path: history_path,
+            db,
+            editor,
+            history_path,
         }
     }
 

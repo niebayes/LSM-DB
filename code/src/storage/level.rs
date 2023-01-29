@@ -9,33 +9,36 @@ use super::keys::{LookupKey, TableKey};
 /// a level in the lsm tree.
 pub struct Level {
     /// level number.
-    pub level_num: u32,
-    /// min user key stored in the level.
-    min_user_key: UserKey,
-    /// max user key stored in the level.
-    max_user_key: UserKey,
+    pub level_num: LevelNum,
+    /// min table key stored in the level.
+    pub min_table_key: TableKey,
+    /// max table key stored in the level.
+    pub max_table_key: TableKey,
     /// sorted runs in the level.
-    runs: Vec<Run>,
+    pub runs: Vec<Run>,
     /// max number of sorted runs this level could hold.
-    max_num_sorted_runs: u32,
-    /// how many bytes or number of sstables this level could hold.
-    capacity: u32,
+    pub run_capcity: usize,
+    /// number of bytes this level could hold.
+    pub size_capacity: usize,
 }
 
+/// level read implementation.
 impl Level {
-    pub fn new(level_num: u32, max_num_sorted_runs: u32, capacity: u32) -> Level {
+    pub fn new(level_num: LevelNum, run_capcity: usize, size_capacity: usize) -> Level {
         Level {
             level_num,
-            min_user_key: UserKey::MAX,
-            max_user_key: UserKey::MIN,
+            min_table_key: TableKey::default(),
+            max_table_key: TableKey::default(),
             runs: Vec::new(),
-            max_num_sorted_runs,
-            capacity,
+            run_capcity,
+            size_capacity,
         }
     }
 
     pub fn get(&self, lookup_key: &LookupKey) -> (Option<UserValue>, bool) {
-        if lookup_key.user_key >= self.min_user_key && lookup_key.user_key <= self.max_user_key {
+        if lookup_key.as_table_key() >= self.min_table_key
+            && lookup_key.as_table_key() <= self.max_table_key
+        {
             // collect table keys having the same user key as the lookup key.
             let mut table_keys = Vec::new();
             for run in self.runs.iter() {
@@ -109,6 +112,35 @@ impl TableKeyIterator for LevelIterator {
     }
 }
 
-pub fn default_two_level() -> Vec<Level> {
-    vec![]
+pub enum LevelState {
+    ExceedSizeCapacity,
+    ExceedRunCapacity,
+    Normal,
+}
+
+impl Level {
+    /// add a run into the level.
+    pub fn add_run(&mut self, run: Run) {
+        self.runs.push(run);
+    }
+
+    /// remove the run at the index idx.
+    pub fn remove_run(&mut self, idx: usize) {
+        self.runs.remove(idx);
+    }
+
+    /// return true if reached the size_capacity or run limit of this level.
+    pub fn state(&self) -> LevelState {
+        // it's possible that a level exceeds the size capacity and the run capacity at the same time.
+        // in such a case, we prefer a horizontal compaction.
+        // TODO: prefer vertical compaction.
+        let level_size = self.runs.iter().fold(0, |total, run| total + run.size());
+        if self.runs.len() >= self.run_capcity {
+            LevelState::ExceedRunCapacity
+        } else if level_size >= self.size_capacity {
+            LevelState::ExceedSizeCapacity
+        } else {
+            LevelState::Normal
+        }
+    }
 }

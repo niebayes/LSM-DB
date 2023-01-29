@@ -8,9 +8,9 @@ pub enum Command {
     Range(UserKey, UserKey), // fetch values in the key range [start_key, end_key).
     Delete(UserKey),         // remove the kv pair associated with the given key if the key exists.
     Load(String),            // upsert kv pairs stored in the file to the db.
-    PrintStats, // print the current state of the db including the in-mem states and the on-disk states.
-    Quit,       // terminate the session.
-    Help,       // print help options.
+    PrintStats,              // print the key range in all levels of the lsm tree.
+    Quit,                    // terminate the session.
+    Help,                    // print help options.
 }
 
 impl Command {
@@ -20,35 +20,32 @@ impl Command {
             "p" | "put" => {
                 if tokens.len() == 3 && is_valid_key(tokens[1]) && is_valid_value(tokens[2]) {
                     return Some(Command::Put(
-                        tokens[1].as_ptr() as UserKey,
-                        tokens[2].as_ptr() as UserValue,
+                        tokens[1].parse().unwrap(),
+                        tokens[2].parse().unwrap(),
                     ));
                 }
                 None
             }
             "g" | "get" => {
                 if tokens.len() == 2 && is_valid_key(tokens[1]) {
-                    return Some(Command::Get(tokens[1].as_ptr() as UserKey));
+                    return Some(Command::Get(tokens[1].parse().unwrap()));
                 }
                 None
             }
             "r" | "range" => {
                 if tokens.len() == 3 && is_valid_key(tokens[1]) && is_valid_key(tokens[2]) {
-                    let start_key = tokens[1].as_ptr() as UserKey;
-                    let end_key = tokens[2].as_ptr() as UserKey;
+                    let start_key = tokens[1].parse().unwrap();
+                    let end_key = tokens[2].parse().unwrap();
                     // ensure the range is valid.
                     if start_key <= end_key {
-                        return Some(Command::Range(
-                            tokens[1].as_ptr() as UserKey,
-                            tokens[2].as_ptr() as UserKey,
-                        ));
+                        return Some(Command::Range(start_key, end_key));
                     }
                 }
                 None
             }
             "d" | "delete" => {
                 if tokens.len() == 2 && is_valid_key(tokens[1]) {
-                    return Some(Command::Get(tokens[1].as_ptr() as UserKey));
+                    return Some(Command::Get(tokens[1].parse().unwrap()));
                 }
                 None
             }
