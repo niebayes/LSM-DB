@@ -39,7 +39,8 @@ impl Server {
     pub fn run(&mut self) {
         // print help options.
         print_help();
-        // repeatedly read commands from the terminal and forward it to the db.
+
+        // repeatedly read commands from the terminal.
         loop {
             let cmd = self.get_next_cmd();
             match cmd {
@@ -58,16 +59,14 @@ impl Server {
             static PROMPT: &str = "(lsm_db) ";
             match self.editor.readline(PROMPT) {
                 Ok(line) => {
-                    // skip empty line.
+                    // skip empty lines.
                     if line.trim().len() == 0 {
                         continue;
                     }
 
                     // save the command as a history entry.
                     self.editor.add_history_entry(line.as_str());
-                    if let Err(_) = self.editor.save_history(&self.history_path) {
-                        log::warn!("Failed to save history file");
-                    }
+                    self.editor.save_history(&self.history_path).unwrap();
 
                     // split the command line into tokens.
                     let tokens: Vec<&str> = line.split_whitespace().collect();
@@ -87,7 +86,7 @@ impl Server {
                     return Command::Quit;
                 }
                 Err(err) => {
-                    log::error!("Unexpected error: {:?}", err);
+                    panic!("Unexpected error: {:?}", err);
                 }
             }
         }
@@ -100,6 +99,7 @@ impl Server {
             }
             Command::Get(key) => {
                 if let Some(val) = self.db.get(key) {
+                    // print the value.
                     println!("{}", val);
                 }
             }
@@ -122,7 +122,7 @@ impl Server {
                 // open the file.
                 let file = File::open(Path::new(&cmd_batch_file)).unwrap();
 
-                // read all bytes into the buffer.
+                // read all file content into the buffer.
                 let mut reader = BufReader::new(file);
                 let mut buf = Vec::new();
                 reader.read_to_end(&mut buf).unwrap();
@@ -130,21 +130,20 @@ impl Server {
                 // read kv entries entry by entry.
                 static ENTRY_SIZE: usize = mem::size_of::<UserEntry>();
                 static KEY_SIZE: usize = mem::size_of::<UserKey>();
-                assert!(buf.len() % ENTRY_SIZE == 0);
+                assert_eq!(buf.len() % ENTRY_SIZE, 0);
 
                 for i in (0..buf.len()).step_by(ENTRY_SIZE) {
                     let key_bytes = &buf[i..i + KEY_SIZE];
                     let val_bytes = &buf[i + KEY_SIZE..i + ENTRY_SIZE];
-                    // FIXME: use converter module to do this conversion.
-                    let key = key_bytes.as_ptr() as UserKey;
-                    let val = val_bytes.as_ptr() as UserValue;
+                    let key = unsafe { *(key_bytes.as_ptr()) } as UserKey;
+                    let val = unsafe { *(val_bytes.as_ptr()) } as UserValue;
 
                     // insert the kv entry into the db.
                     self.db.put(key, val);
                 }
             }
             Command::PrintStats => {
-                self.db.print_stats();
+                println!("{}", self.db.stats());
             }
             _ => {}
         }

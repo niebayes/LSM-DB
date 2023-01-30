@@ -2,6 +2,7 @@ use super::iterator::TableKeyIterator;
 use super::keys::*;
 use crate::util::types::*;
 use std::collections::BTreeSet;
+use std::fmt::Display;
 
 /// memtable.
 /// keys are written into the memtable buffer before being flushed to the sstables.
@@ -88,5 +89,53 @@ impl MemTable {
     /// return the total size in bytes of the table keys stored in the memtable.
     pub fn size(&self) -> usize {
         self.set.len() * TABLE_KEY_SIZE
+    }
+
+    pub fn stats(&self) -> MemTableStats {
+        let mut all_table_keys = Vec::new();
+        let mut visible_table_keys = Vec::new();
+
+        let mut iter = self.iter();
+        let mut last_user_key = None;
+        while let Some(table_key) = iter.next() {
+            if last_user_key.is_none() || last_user_key.unwrap() == table_key.user_key {
+                last_user_key = Some(table_key.user_key);
+                visible_table_keys.push(format!("{}", table_key));
+            }
+            all_table_keys.push(format!("{}", table_key));
+        }
+
+        MemTableStats {
+            all_table_keys,
+            visible_table_keys,
+        }
+    }
+}
+
+pub struct MemTableStats {
+    /// all table keys in the memtable.
+    all_table_keys: Vec<String>,
+    /// keys with higher sequence numbers shadows keys with lower sequence numbers.
+    visible_table_keys: Vec<String>,
+}
+
+impl Display for MemTableStats {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut stats = String::new();
+
+        stats += &format!("all table keys:\n\tcount: {}", self.all_table_keys.len());
+        for table_key in self.all_table_keys.iter() {
+            stats += &format!("\n\t{}", table_key);
+        }
+
+        stats += &format!(
+            "visible table keys:\n\tcount: {}",
+            self.visible_table_keys.len()
+        );
+        for table_key in self.visible_table_keys.iter() {
+            stats += &format!("\n\t{}", table_key);
+        }
+
+        write!(f, "{}", stats)
     }
 }

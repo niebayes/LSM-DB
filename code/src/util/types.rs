@@ -11,9 +11,9 @@ pub enum WriteType {
 impl Display for WriteType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            WriteType::Put => write!(f, "Put"),
-            WriteType::Delete => write!(f, "Delete"),
-            WriteType::Empty => write!(f, "Empty"),
+            WriteType::Put => write!(f, "P"),
+            WriteType::Delete => write!(f, "D"),
+            WriteType::Empty => write!(f, "NaN"),
         }
     }
 }

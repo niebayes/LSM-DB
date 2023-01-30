@@ -1,6 +1,7 @@
 use crate::util::types::*;
 use integer_encoding::*;
 use std::cmp::Ordering;
+use std::fmt::Display;
 use std::io;
 use std::mem;
 
@@ -118,6 +119,16 @@ impl Ord for TableKey {
             }
         }
         ord
+    }
+}
+
+impl Display for TableKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "[{} | {} | {} | {}]",
+            self.user_key, self.seq_num, self.write_type, self.user_val
+        )
     }
 }
 

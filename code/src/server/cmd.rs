@@ -99,6 +99,7 @@ pub fn print_help() {
     static QUIT: &str = "q | quit";
     static HELP: &str = "h | help";
 
+    // TODO: rewrite.
     print!(
         "  Usage:\n\t{:<35}{}\n\t{:<35}{}\n\t{:<35}{}\n\t{:<35}{}\n\t{:<35}{}\n\t{:<35}{}\n\t{:<35}{}\n\t{:<35}{}\n",
         PUT, "upsert a key-value pair to the database",

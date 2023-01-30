@@ -1,7 +1,8 @@
-use crate::storage::run::{Run, RunIterator};
+use crate::storage::run::{Run, RunIterator, RunStats};
 use crate::util::types::*;
 use std::cmp;
 use std::collections::binary_heap::BinaryHeap;
+use std::fmt::Display;
 
 use super::iterator::TableKeyIterator;
 use super::keys::{LookupKey, TableKey};
@@ -192,6 +193,61 @@ impl Level {
             LevelState::ExceedSizeCapacity
         } else {
             LevelState::Normal
+        }
+    }
+}
+
+pub struct LevelStats {
+    run_stats: Vec<RunStats>,
+    min_table_key: Option<TableKey>,
+    max_table_key: Option<TableKey>,
+}
+
+impl Display for LevelStats {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut stats = String::new();
+
+        if let Some(table_key) = self.min_table_key.as_ref() {
+            stats += &format!("min table key: {}\n", table_key);
+        } else {
+            stats += &format!("min table key: {}\n", "NaN");
+        }
+
+        if let Some(table_key) = self.max_table_key.as_ref() {
+            stats += &format!("max table key: {}\n", table_key);
+        } else {
+            stats += &format!("max table key: {}\n", "NaN");
+        }
+
+        for (i, run_stats) in self.run_stats.iter().enumerate() {
+            stats += &format!("run index: {}\n\t{}", i, run_stats);
+        }
+
+        write!(f, "{}", stats)
+    }
+}
+
+impl Level {
+    pub fn stats(&self) -> LevelStats {
+        let mut run_stats = Vec::new();
+        for run in self.runs.iter() {
+            run_stats.push(run.stats());
+        }
+
+        let mut min_table_key = None;
+        let mut max_table_key = None;
+
+        if let Some(table_key) = self.min_table_key.as_ref() {
+            min_table_key = Some(table_key.clone());
+        }
+        if let Some(table_key) = self.max_table_key.as_ref() {
+            max_table_key = Some(table_key.clone());
+        }
+
+        LevelStats {
+            run_stats,
+            min_table_key,
+            max_table_key,
         }
     }
 }

@@ -4,14 +4,13 @@ use super::iterator::TableKeyIterator;
 use super::keys::*;
 use crate::util::types::*;
 use std::cmp;
+use std::fmt::Display;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::panic;
 use std::rc::Rc;
 
-/// sstable.
-/// it's literally an in-memory sstable wrapper which provides read and write interfaces for an on-disk sstable file.
-/// it also stores file metadata.
+/// in-memory sstable metadata.
 pub struct SSTable {
     /// sstable file number from which the corresponding sstable file could be located.
     pub file_num: FileNum,
@@ -221,6 +220,8 @@ pub struct SSTableWriterBatch {
     sstable_writer: Option<SSTableWriter>,
     next_file_num: FileNum,
     outputs: Vec<Rc<SSTable>>,
+    pub min_table_key: Option<TableKey>,
+    pub max_table_key: Option<TableKey>,
 }
 
 /// receives table keys and write them into a batch of sstable files.
@@ -230,6 +231,8 @@ impl SSTableWriterBatch {
             sstable_writer: None,
             next_file_num,
             outputs: Vec::new(),
+            min_table_key: None,
+            max_table_key: None,
         }
     }
 
@@ -262,7 +265,82 @@ impl SSTableWriterBatch {
         if self.sstable_writer.is_some() {
             self.harness();
         }
+
+        let mut min_table_key = self.outputs.first().unwrap().min_table_key.clone();
+        let mut max_table_key = self.outputs.first().unwrap().max_table_key.clone();
+
+        for i in 1..self.outputs.len() {
+            min_table_key = cmp::min(
+                min_table_key.clone(),
+                self.outputs.get(i).unwrap().min_table_key.clone(),
+            );
+            max_table_key = cmp::max(
+                max_table_key.clone(),
+                self.outputs.get(i).unwrap().max_table_key.clone(),
+            );
+        }
+
+        self.min_table_key = Some(min_table_key);
+        self.max_table_key = Some(max_table_key);
+
         (self.outputs.clone(), self.next_file_num)
+    }
+}
+
+pub struct SSTableStats {
+    pub file_num: FileNum,
+    all_table_keys: Vec<String>,
+    visible_table_keys: Vec<String>,
+    min_table_key: TableKey,
+    max_table_key: TableKey,
+}
+
+impl Display for SSTableStats {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut stats = String::new();
+
+        stats += &format!("min table key: {}\n", self.min_table_key);
+        stats += &format!("max table key: {}\n", self.max_table_key);
+
+        stats += &format!("all table keys:\n\tcount: {}", self.all_table_keys.len());
+        for table_key in self.all_table_keys.iter() {
+            stats += &format!("\n\t{}", table_key);
+        }
+
+        stats += &format!(
+            "visible table keys:\n\tcount: {}",
+            self.visible_table_keys.len()
+        );
+        for table_key in self.visible_table_keys.iter() {
+            stats += &format!("\n\t{}", table_key);
+        }
+
+        write!(f, "{}", stats)
+    }
+}
+
+impl SSTable {
+    pub fn stats(&self) -> SSTableStats {
+        let mut all_table_keys = Vec::new();
+        let mut visible_table_keys = Vec::new();
+
+        let mut iter = self.iter().unwrap();
+        let mut last_user_key = None;
+        while let Some(table_key) = iter.next() {
+            if last_user_key.is_none() || last_user_key.unwrap() == table_key.user_key {
+                last_user_key = Some(table_key.user_key);
+                visible_table_keys.push(format!("{}", table_key));
+            }
+            all_table_keys.push(format!("{}", table_key));
+        }
+
+        SSTableStats {
+            file_num: self.file_num,
+            all_table_keys,
+            visible_table_keys,
+            min_table_key: self.min_table_key.clone(),
+            max_table_key: self.max_table_key.clone(),
+        }
     }
 }
 

@@ -1,5 +1,6 @@
-use crate::storage::sstable::{SSTable, SSTableIterator};
+use crate::storage::sstable::{SSTable, SSTableIterator, SSTableStats};
 use std::cmp::{self, Ordering};
+use std::fmt::Display;
 use std::rc::Rc;
 
 use super::iterator::TableKeyIterator;
@@ -183,6 +184,41 @@ impl Ord for RunIterator {
             (Some(_), None) => return Ordering::Less,
             (None, Some(_)) => return Ordering::Greater,
             (None, None) => return Ordering::Equal,
+        }
+    }
+}
+
+pub struct RunStats {
+    sstable_stats: Vec<SSTableStats>,
+    min_table_key: TableKey,
+    max_table_key: TableKey,
+}
+
+impl Display for RunStats {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut stats = String::new();
+
+        stats += &format!("min table key: {}\n", self.min_table_key);
+        stats += &format!("max table key: {}\n", self.max_table_key);
+
+        for sstable_stats in self.sstable_stats.iter() {
+            stats += &format!("file num: {}\n\t{}", sstable_stats.file_num, sstable_stats);
+        }
+
+        write!(f, "{}", stats)
+    }
+}
+
+impl Run {
+    pub fn stats(&self) -> RunStats {
+        let mut sstable_stats = Vec::new();
+        for sstable in self.sstables.iter() {
+            sstable_stats.push(sstable.stats());
+        }
+        RunStats {
+            sstable_stats,
+            min_table_key: self.min_table_key.as_ref().unwrap().clone(),
+            max_table_key: self.max_table_key.as_ref().unwrap().clone(),
         }
     }
 }
