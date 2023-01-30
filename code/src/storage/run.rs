@@ -1,5 +1,5 @@
 use crate::storage::sstable::{SSTable, SSTableIterator};
-use std::cmp::Ordering;
+use std::cmp::{self, Ordering};
 use std::rc::Rc;
 
 use super::iterator::TableKeyIterator;
@@ -9,14 +9,15 @@ use super::keys::*;
 /// two properties a sorted run must have:
 /// (1) keys are sorted.
 /// (2) keys are non-overlapping.
+#[derive(Clone)]
 pub struct Run {
     /// sstables in the run.
     /// the sstables are sorted by the max user key, i.e. sstables with lower max user keys are placed first.
     pub sstables: Vec<Rc<SSTable>>,
     /// min table key stored in the run.
-    pub min_table_key: TableKey,
+    pub min_table_key: Option<TableKey>,
     /// max table key stored in the run.
-    pub max_table_key: TableKey,
+    pub max_table_key: Option<TableKey>,
 }
 
 impl Run {
@@ -27,14 +28,14 @@ impl Run {
     ) -> Self {
         Self {
             sstables,
-            min_table_key,
-            max_table_key,
+            min_table_key: Some(min_table_key),
+            max_table_key: Some(max_table_key),
         }
     }
 
     pub fn get(&self, lookup_key: &LookupKey) -> (Option<TableKey>, bool) {
-        if lookup_key.as_table_key() >= self.min_table_key
-            && lookup_key.as_table_key() <= self.max_table_key
+        if &lookup_key.as_table_key() >= self.min_table_key.as_ref().unwrap()
+            && &lookup_key.as_table_key() <= self.max_table_key.as_ref().unwrap()
         {
             if let Some(sstable) = self.binary_search(lookup_key) {
                 return sstable.get(lookup_key);
@@ -89,18 +90,30 @@ impl Run {
         total
     }
 
-    /// add an sstable into the run.
-    pub fn add_sstable(&mut self, sstable: Rc<SSTable>) {
-        self.sstables.push(sstable);
-    }
+    /// update the key range of the run using the existing sstables.
+    pub fn update_key_range(&mut self) {
+        if self.sstables.is_empty() {
+            self.min_table_key = None;
+            self.max_table_key = None;
+            return;
+        }
 
-    /// remove the sstable at the index idx.
-    /// return true if the run becomes empty after the removal.
-    pub fn remove_sstable(&mut self, idx: usize) -> bool {
-        self.sstables.remove(idx);
+        let mut min_table_key = self.sstables.first().unwrap().min_table_key.clone();
+        let mut max_table_key = self.sstables.first().unwrap().max_table_key.clone();
 
-        // update key range.
-        self.sstables.is_empty()
+        for i in 1..self.sstables.len() {
+            min_table_key = cmp::min(
+                min_table_key.clone(),
+                self.sstables.get(i).unwrap().min_table_key.clone(),
+            );
+            max_table_key = cmp::max(
+                max_table_key.clone(),
+                self.sstables.get(i).unwrap().max_table_key.clone(),
+            );
+        }
+
+        self.min_table_key = Some(min_table_key);
+        self.max_table_key = Some(max_table_key);
     }
 }
 

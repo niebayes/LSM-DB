@@ -1,5 +1,6 @@
 use super::block::DataBlock;
 
+// TODO: implement.
 pub struct BloomFilter {}
 
 impl BloomFilter {

@@ -2,7 +2,6 @@ use super::block::*;
 use super::bloom_filter::BloomFilter;
 use super::iterator::TableKeyIterator;
 use super::keys::*;
-use crate::db::db::FileNumDispatcher;
 use crate::util::types::*;
 use std::cmp;
 use std::fs::File;
@@ -15,7 +14,7 @@ use std::rc::Rc;
 /// it also stores file metadata.
 pub struct SSTable {
     /// sstable file number from which the corresponding sstable file could be located.
-    file_num: FileNum,
+    pub file_num: FileNum,
     /// sstable file size.
     pub file_size: usize,
     /// min table key stored in the sstable.
@@ -148,8 +147,14 @@ impl SSTableWriter {
     }
 
     pub fn push(&mut self, table_key: TableKey) {
-        self.min_table_key = Some(cmp::min(self.min_table_key.unwrap(), table_key.clone()));
-        self.max_table_key = Some(cmp::max(self.max_table_key.unwrap(), table_key.clone()));
+        self.min_table_key = Some(cmp::min(
+            self.min_table_key.as_ref().unwrap().clone(),
+            table_key.clone(),
+        ));
+        self.max_table_key = Some(cmp::max(
+            self.max_table_key.as_ref().unwrap().clone(),
+            table_key.clone(),
+        ));
 
         self.data_block.add(table_key);
         self.num_table_keys += 1;
@@ -174,7 +179,7 @@ impl SSTableWriter {
         self.data_block.reset();
     }
 
-    pub fn done(&self) -> SSTable {
+    pub fn done(&mut self) -> SSTable {
         // flush other blocks.
         self.writer
             .write(&self.filter_block.encode_to_bytes())
@@ -191,18 +196,17 @@ impl SSTableWriter {
             self.num_table_keys,
             filter_block_offset,
             index_block_offset,
-            self.min_table_key.unwrap(),
-            self.max_table_key.unwrap(),
+            self.min_table_key.as_ref().unwrap().clone(),
+            self.max_table_key.as_ref().unwrap().clone(),
         );
-
         self.writer.write(&footer.encode_to_bytes()).unwrap();
 
         // create an in-memory sstable filemeta.
         SSTable::new(
             self.file_num,
             self.file_size(),
-            self.min_table_key.unwrap(),
-            self.max_table_key.unwrap(),
+            self.min_table_key.as_ref().unwrap().clone(),
+            self.max_table_key.as_ref().unwrap().clone(),
         )
     }
 
@@ -214,45 +218,51 @@ impl SSTableWriter {
 }
 
 pub struct SSTableWriterBatch {
-    file_num_dispatcher: Rc<FileNumDispatcher>,
-    pub sstable_writer: Option<SSTableWriter>,
+    sstable_writer: Option<SSTableWriter>,
+    next_file_num: FileNum,
     outputs: Vec<Rc<SSTable>>,
 }
 
 /// receives table keys and write them into a batch of sstable files.
 impl SSTableWriterBatch {
-    pub fn new(file_num_dispatcher: Rc<FileNumDispatcher>) -> Self {
+    pub fn new(next_file_num: FileNum) -> Self {
         Self {
-            file_num_dispatcher,
             sstable_writer: None,
+            next_file_num,
             outputs: Vec::new(),
         }
+    }
+
+    fn alloc_file_num(&mut self) -> FileNum {
+        let file_num = self.next_file_num;
+        self.next_file_num += 1;
+        file_num
     }
 
     /// push a table key into the active sstable writer.
     pub fn push(&mut self, table_key: TableKey) {
         if self.sstable_writer.is_none() {
-            let file_num = self.file_num_dispatcher.alloc_file_num();
+            let file_num = self.alloc_file_num();
             self.sstable_writer = Some(SSTableWriter::new(file_num));
         }
 
-        self.sstable_writer.unwrap().push(table_key);
+        self.sstable_writer.as_mut().unwrap().push(table_key);
     }
 
     /// harness an sstable.
     // TODO: rewrite harness logic in db.
     pub fn harness(&mut self) {
         self.outputs
-            .push(Rc::new(self.sstable_writer.unwrap().done()));
+            .push(Rc::new(self.sstable_writer.as_mut().unwrap().done()));
         // reset.
         self.sstable_writer = None;
     }
 
-    pub fn done(&mut self) -> Vec<Rc<SSTable>> {
+    pub fn done(&mut self) -> (Vec<Rc<SSTable>>, FileNum) {
         if self.sstable_writer.is_some() {
             self.harness();
         }
-        self.outputs
+        (self.outputs.clone(), self.next_file_num)
     }
 }
 

@@ -1,6 +1,6 @@
 use crate::storage::run::{Run, RunIterator};
 use crate::util::types::*;
-use std::cmp::Ordering;
+use std::cmp;
 use std::collections::binary_heap::BinaryHeap;
 
 use super::iterator::TableKeyIterator;
@@ -11,9 +11,9 @@ pub struct Level {
     /// level number.
     pub level_num: LevelNum,
     /// min table key stored in the level.
-    pub min_table_key: TableKey,
+    pub min_table_key: Option<TableKey>,
     /// max table key stored in the level.
-    pub max_table_key: TableKey,
+    pub max_table_key: Option<TableKey>,
     /// sorted runs in the level.
     pub runs: Vec<Run>,
     /// max number of sorted runs this level could hold.
@@ -27,8 +27,8 @@ impl Level {
     pub fn new(level_num: LevelNum, run_capcity: usize, size_capacity: usize) -> Level {
         Level {
             level_num,
-            min_table_key: TableKey::default(),
-            max_table_key: TableKey::default(),
+            min_table_key: None,
+            max_table_key: None,
             runs: Vec::new(),
             run_capcity,
             size_capacity,
@@ -36,8 +36,12 @@ impl Level {
     }
 
     pub fn get(&self, lookup_key: &LookupKey) -> (Option<UserValue>, bool) {
-        if lookup_key.as_table_key() >= self.min_table_key
-            && lookup_key.as_table_key() <= self.max_table_key
+        if self.min_table_key.is_none() {
+            return (None, false);
+        }
+
+        if &lookup_key.as_table_key() >= self.min_table_key.as_ref().unwrap()
+            && &lookup_key.as_table_key() <= self.max_table_key.as_ref().unwrap()
         {
             // collect table keys having the same user key as the lookup key.
             let mut table_keys = Vec::new();
@@ -124,9 +128,56 @@ impl Level {
         self.runs.push(run);
     }
 
-    /// remove the run at the index idx.
-    pub fn remove_run(&mut self, idx: usize) {
-        self.runs.remove(idx);
+    /// update the key range of the run using the existing sstables.
+    pub fn update_key_range(&mut self) {
+        if self.runs.is_empty() {
+            self.min_table_key = None;
+            self.max_table_key = None;
+            return;
+        }
+
+        let mut min_table_key = self
+            .runs
+            .first()
+            .unwrap()
+            .min_table_key
+            .as_ref()
+            .unwrap()
+            .clone();
+        let mut max_table_key = self
+            .runs
+            .first()
+            .unwrap()
+            .max_table_key
+            .as_ref()
+            .unwrap()
+            .clone();
+
+        for i in 1..self.runs.len() {
+            min_table_key = cmp::min(
+                min_table_key.clone(),
+                self.runs
+                    .get(i)
+                    .unwrap()
+                    .min_table_key
+                    .as_ref()
+                    .unwrap()
+                    .clone(),
+            );
+            max_table_key = cmp::max(
+                max_table_key.clone(),
+                self.runs
+                    .get(i)
+                    .unwrap()
+                    .max_table_key
+                    .as_ref()
+                    .unwrap()
+                    .clone(),
+            );
+        }
+
+        self.min_table_key = Some(min_table_key);
+        self.max_table_key = Some(max_table_key);
     }
 
     /// return true if reached the size_capacity or run limit of this level.

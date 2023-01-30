@@ -26,12 +26,15 @@ impl DataBlock {
     }
 
     pub fn add(&mut self, table_key: TableKey) {
-        self.max_table_key = Some(cmp::max(self.max_table_key.unwrap(), table_key.clone()));
+        self.max_table_key = Some(cmp::max(
+            self.max_table_key.as_ref().unwrap().clone(),
+            table_key.clone(),
+        ));
         self.table_keys.push(table_key);
     }
 
     pub fn fence_pointer(&self) -> TableKey {
-        self.max_table_key.unwrap().clone()
+        self.max_table_key.as_ref().unwrap().clone()
     }
 
     pub fn size(&self) -> usize {
@@ -45,7 +48,7 @@ impl DataBlock {
 
     pub fn encode_to_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
-        for table_key in self.table_keys {
+        for table_key in self.table_keys.iter() {
             bytes.append(&mut table_key.encode_to_bytes());
         }
         maybe_pad(&mut bytes);
@@ -96,7 +99,7 @@ impl IndexBlock {
 
     pub fn encode_to_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
-        for fence_pointer in self.fence_pointers {
+        for fence_pointer in self.fence_pointers.iter() {
             bytes.append(&mut fence_pointer.encode_to_bytes());
         }
         maybe_pad(&mut bytes);
