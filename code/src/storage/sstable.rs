@@ -38,20 +38,18 @@ impl SSTable {
     }
 
     pub fn get(&self, lookup_key: &LookupKey) -> (Option<TableKey>, bool) {
-        // TODO: binary search by fence pointers which are constructed from index block.
         if lookup_key.as_table_key() >= self.min_table_key
             && lookup_key.as_table_key() <= self.max_table_key
         {
-            if let Ok(mut iter) = self.iter() {
-                iter.seek(lookup_key);
-                if iter.valid() {
-                    let table_key = iter.curr().unwrap();
-                    if table_key.user_key == lookup_key.user_key {
-                        match table_key.write_type {
-                            WriteType::Put => return (Some(table_key), false),
-                            WriteType::Delete => return (Some(table_key), true),
-                            other => panic!("Unexpected write type: {}", other as u8),
-                        }
+            let mut iter = self.iter().unwrap();
+            iter.seek(lookup_key);
+            if iter.valid() {
+                let table_key = iter.curr().unwrap();
+                if table_key.user_key == lookup_key.user_key {
+                    match table_key.write_type {
+                        WriteType::Put => return (Some(table_key), false),
+                        WriteType::Delete => return (Some(table_key), true),
+                        other => panic!("Unexpected write type: {}", other as u8),
                     }
                 }
             }
@@ -60,61 +58,163 @@ impl SSTable {
     }
 
     pub fn iter(&self) -> Result<SSTableIterator, ()> {
-        match File::open(sstable_file_name(self.file_num)) {
-            Ok(file) => {
-                return Ok(SSTableIterator {
-                    sstable_file_reader: BufReader::new(file),
-                    curr_table_key: None,
-                });
-            }
-            Err(err) => {
-                log::error!(
-                    "Failed to open sstable file {}: {}",
-                    &sstable_file_name(self.file_num),
-                    err
-                );
-                return Err(());
-            }
-        }
+        let reader = SSTableReader::new(self.file_num);
+        Ok(SSTableIterator {
+            reader,
+            data_block_iter: None,
+        })
     }
 }
 
-/// an sstable's iterator.
-/// keys in an sstable is clustered into a sequence of chunks.
-/// each chunk contains keys with the same user key but with different sequence numbers,
-/// and keys with lower sequence numbers are placed first.
 pub struct SSTableIterator {
-    /// a buffered reader for reading the sstable file.
-    sstable_file_reader: BufReader<File>,
-    curr_table_key: Option<TableKey>,
+    reader: SSTableReader,
+    data_block_iter: Option<DataBlockIterator>,
 }
 
 impl TableKeyIterator for SSTableIterator {
     fn seek(&mut self, lookup_key: &LookupKey) {
-        while let Some(table_key) = self.next() {
-            if table_key >= lookup_key.as_table_key() {
-                break;
-            }
+        // binary search the lookup key by fence pointers.
+        if let Some(data_block_idx) = self.reader.index_block.binary_search(lookup_key) {
+            self.reader.advance_to(data_block_idx);
+            self.data_block_iter = Some(self.reader.data_block.as_ref().unwrap().iter());
+            self.data_block_iter.as_mut().unwrap().seek(lookup_key);
         }
     }
 
     fn next(&mut self) -> Option<TableKey> {
-        let mut buf = vec![0; TABLE_KEY_SIZE];
-        if let Ok(_) = self.sstable_file_reader.read_exact(&mut buf) {
-            if let Ok(table_key) = TableKey::decode_from_bytes(&buf) {
-                self.curr_table_key = Some(table_key);
-                return self.curr_table_key.clone();
+        if self.data_block_iter.is_some() {
+            if let Some(table_key) = self.data_block_iter.as_mut().unwrap().next() {
+                // this data block is not exhausted.
+                return Some(table_key);
             }
         }
-        None
+        // reach here if either the data block iter is some but exhausted,
+        // or the data block iter is none which could only happen on the init.
+
+        self.reader.next();
+        if self.reader.done() {
+            // all data blocks are read over.
+            return None;
+        }
+        // successfully read the next data block.
+        self.data_block_iter = Some(self.reader.data_block.as_ref().unwrap().iter());
+        // this next must succeed, i.e. some table key must be returned.
+        self.data_block_iter.as_mut().unwrap().next()
     }
 
     fn curr(&self) -> Option<TableKey> {
-        self.curr_table_key.clone()
+        if self.data_block_iter.is_some() {
+            self.data_block_iter.as_ref().unwrap().curr()
+        } else {
+            None
+        }
     }
 
     fn valid(&self) -> bool {
-        self.curr_table_key.is_some()
+        self.data_block_iter.is_some() && self.data_block_iter.as_ref().unwrap().valid()
+    }
+}
+
+/// a reader for reading an sstable file.
+struct SSTableReader {
+    reader: BufReader<File>,
+    data_block: Option<DataBlock>,
+    filter_block: FilterBlock,
+    index_block: IndexBlock,
+    total_num_table_keys: usize,
+    next_data_block_idx: usize,
+    num_data_blocks: usize,
+}
+
+impl SSTableReader {
+    pub fn new(file_num: FileNum) -> Self {
+        let file = File::open(sstable_file_name(file_num)).unwrap();
+        let file_size = file.metadata().unwrap().len();
+        let mut reader = BufReader::new(file);
+
+        // read the footer.
+        let footer_offset = file_size as usize - BLOCK_SIZE;
+        reader.seek_relative(footer_offset as i64).unwrap();
+        let mut buf = make_block_buf();
+        reader.read_exact(&mut buf).unwrap();
+        let footer = Footer::decode_from_bytes(&buf).unwrap();
+
+        // reset the seek cursor and read the filter block.
+        reader.seek_relative(-(footer_offset as i64)).unwrap();
+        buf.clear();
+        reader
+            .seek_relative(footer.filter_block_offset as i64)
+            .unwrap();
+        reader.read_exact(&mut buf).unwrap();
+        let filter_block = FilterBlock::decode_from_bytes(&buf, footer.num_table_keys).unwrap();
+
+        // reset the seek cursor and read the index block.
+        reader
+            .seek_relative(-(footer.filter_block_offset as i64))
+            .unwrap();
+        buf.clear();
+        reader
+            .seek_relative(footer.index_block_offset as i64)
+            .unwrap();
+        reader.read_exact(&mut buf).unwrap();
+        let index_block = IndexBlock::decode_from_bytes(&buf, footer.num_table_keys).unwrap();
+
+        // reset the seek cursor to prepare for reading data blocks.
+        reader
+            .seek_relative(-(footer.index_block_offset as i64))
+            .unwrap();
+
+        Self {
+            reader,
+            data_block: None,
+            filter_block,
+            index_block,
+            total_num_table_keys: footer.num_table_keys,
+            next_data_block_idx: 0,
+            num_data_blocks: table_keys_to_blocks(footer.num_table_keys),
+        }
+    }
+
+    /// advance to the next data block if any.
+    /// return true if the advancing is successful.
+    fn next(&mut self) {
+        if self.done() {
+            return;
+        }
+
+        // read the next data block into the buffer.
+        let block_offset = self.next_data_block_idx * BLOCK_SIZE;
+        self.reader.seek_relative(block_offset as i64).unwrap();
+        let mut buf = vec![0; BLOCK_SIZE];
+        self.reader.read_exact(&mut buf).unwrap();
+        // reset cursor.
+        self.reader.seek_relative(-(block_offset as i64)).unwrap();
+
+        // #table keys in the next data block.
+        let num_table_keys = self.total_num_table_keys - KEYS_PER_BLOCK * self.next_data_block_idx;
+
+        let mut data_block = DataBlock::new();
+        for i in 0..num_table_keys {
+            let offset = i * TABLE_KEY_SIZE;
+            let table_key =
+                TableKey::decode_from_bytes(&buf[offset..offset + TABLE_KEY_SIZE].to_owned())
+                    .unwrap();
+            data_block.add(table_key);
+        }
+        self.data_block = Some(data_block);
+
+        self.next_data_block_idx += 1;
+    }
+
+    /// advance the cursor to the start of the data block with index data_block_idx.
+    fn advance_to(&mut self, data_block_idx: usize) {
+        while self.next_data_block_idx < data_block_idx {
+            self.next();
+        }
+    }
+
+    fn done(&self) -> bool {
+        self.next_data_block_idx >= self.num_data_blocks
     }
 }
 
@@ -163,6 +263,7 @@ impl SSTableWriter {
         }
     }
 
+    // FIXME: Is it necessary to apply padding on a data block? Seems no.
     fn flush_data_block(&mut self) {
         self.writer
             .write(&self.data_block.encode_to_bytes())
@@ -188,7 +289,7 @@ impl SSTableWriter {
             .write(&self.index_block.encode_to_bytes())
             .unwrap();
 
-        let num_data_blocks = ((self.num_table_keys * TABLE_KEY_SIZE) + BLOCK_SIZE) / BLOCK_SIZE;
+        let num_data_blocks = table_keys_to_blocks(self.num_table_keys);
         let filter_block_offset = num_data_blocks * BLOCK_SIZE;
         let index_block_offset = filter_block_offset + BLOCK_SIZE;
         let footer = Footer::new(
@@ -346,4 +447,8 @@ impl SSTable {
 
 fn sstable_file_name(file_num: FileNum) -> String {
     format!("sstables/sstable_file_{}", file_num)
+}
+
+fn make_block_buf() -> Vec<u8> {
+    vec![0; BLOCK_SIZE]
 }

@@ -99,12 +99,11 @@ pub fn print_help() {
     static QUIT: &str = "q | quit";
     static HELP: &str = "h | help";
 
-    // TODO: rewrite.
     print!(
         "  Usage:\n\t{:<35}{}\n\t{:<35}{}\n\t{:<35}{}\n\t{:<35}{}\n\t{:<35}{}\n\t{:<35}{}\n\t{:<35}{}\n\t{:<35}{}\n",
         PUT, "upsert a key-value pair to the database",
         GET, "fetch the associated value of the given key",
-        RANGE, "fetch values in the key range from start_key to end_key",
+        RANGE, "fetch values associated with the keys in the key range [start_key, end_key)",
         DELETE, "delete the key-value pair associated with the given key",
         LOAD, "upsert a sequence of key-value pairs stored in the file to the database",
         PRINT_STATS, "print the current state of the database",

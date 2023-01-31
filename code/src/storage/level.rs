@@ -184,13 +184,12 @@ impl Level {
     /// return true if reached the size_capacity or run limit of this level.
     pub fn state(&self) -> LevelState {
         // it's possible that a level exceeds the size capacity and the run capacity at the same time.
-        // in such a case, we prefer a horizontal compaction.
-        // TODO: prefer vertical compaction.
+        // in such a case, we prefer a vertical compaction.
         let level_size = self.runs.iter().fold(0, |total, run| total + run.size());
-        if self.runs.len() >= self.run_capcity {
-            LevelState::ExceedRunCapacity
-        } else if level_size >= self.size_capacity {
+        if level_size >= self.size_capacity {
             LevelState::ExceedSizeCapacity
+        } else if self.runs.len() >= self.run_capcity {
+            LevelState::ExceedRunCapacity
         } else {
             LevelState::Normal
         }

@@ -84,9 +84,11 @@ impl Db {
         }
     }
 
-    // TODO: add next seq/file num.
     pub fn stats(&self) -> String {
         let mut stats = String::new();
+
+        stats += &format!("next sequence number: {}", self.next_seq_num);
+        stats += &format!("next file number: {}", self.next_file_num);
 
         stats += &format!("{}\n", self.mem.stats());
 
@@ -416,13 +418,24 @@ impl Db {
 
     /// merge inputs into a new run and merge this run with another run in the current level.
     fn horizontal_compaction(&mut self, ctx: &mut CompactionContext, curr_level_num: LevelNum) {
-        let new_run = self.merge(&mut ctx.iters());
-        // TODO: it's possible this run contains sstables involved in the compaction. Handle this properly.
-        let old_run = self.select_compaction_run(curr_level_num);
-
         let mut iters: BinaryHeap<TableKeyIteratorType> = BinaryHeap::new();
+
+        // collect file nums of the sstables involved in the compaction.
+        let mut obsolete_file_nums = HashSet::new();
+        for sstable in ctx.inputs.iter() {
+            obsolete_file_nums.insert(sstable.file_num);
+        }
+
+        let old_run = self.select_compaction_run(curr_level_num);
+        for sstable in old_run.sstables.iter() {
+            // only sstables not involved in the compaction are merged with the new run.
+            if !obsolete_file_nums.contains(&sstable.file_num) {
+                iters.push(Box::new(sstable.iter().unwrap()));
+            }
+        }
+
+        let new_run = self.merge(&mut ctx.iters());
         iters.push(Box::new(new_run.iter().unwrap()));
-        iters.push(Box::new(old_run.iter().unwrap()));
 
         let merged_run = self.merge(&mut iters);
 
