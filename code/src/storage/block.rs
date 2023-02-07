@@ -5,7 +5,7 @@ use integer_encoding::*;
 use std::mem;
 use std::{cmp, io};
 
-pub const BLOCK_SIZE: usize = 4 * 1024;
+pub const BLOCK_SIZE: usize = 4 * 1024; // 4KB.
 pub const KEYS_PER_BLOCK: usize = BLOCK_SIZE / TABLE_KEY_SIZE;
 
 fn maybe_pad(bytes: &mut Vec<u8>) {
@@ -116,40 +116,38 @@ impl TableKeyIterator for DataBlockIterator {
 }
 
 pub struct FilterBlock {
-    bloom_filters: Vec<BloomFilter>,
+    bloom_filter: BloomFilter,
 }
-// TODO: replace with the correct size.
-const BLOOM_FILTER_SIZE: usize = 0;
 
 impl FilterBlock {
     pub fn new() -> Self {
         Self {
-            bloom_filters: Vec::new(),
+            bloom_filter: BloomFilter::new(),
         }
     }
 
-    pub fn add(&mut self, bloom_filter: BloomFilter) {
-        self.bloom_filters.push(bloom_filter);
+    pub fn insert(&mut self, table_key: &TableKey) {
+        self.bloom_filter.insert(table_key);
+    }
+
+    pub fn maybe_contain(&self, lookup_key: &LookupKey) -> bool {
+        self.bloom_filter.maybe_contain(lookup_key)
     }
 
     pub fn encode_to_bytes(&self) -> Vec<u8> {
-        // TODO: implement.
-        let mut bytes = Vec::new();
-        maybe_pad(&mut bytes);
-        bytes
+        self.bloom_filter.encode_to_bytes()
     }
 
-    pub fn decode_from_bytes(bytes: &Vec<u8>, num_table_keys: usize) -> Result<Self, io::Error> {
-        // TODO: implement.
-        let num_data_blocks = table_keys_to_blocks(num_table_keys);
-        Err(io::Error::from_raw_os_error(0))
+    pub fn decode_from_bytes(bytes: &Vec<u8>) -> Self {
+        Self {
+            bloom_filter: BloomFilter::decode_from_bytes(bytes),
+        }
     }
 }
 
 pub struct IndexBlock {
     fence_pointers: Vec<TableKey>,
 }
-const FENCE_POINTER_SIZE: usize = TABLE_KEY_SIZE;
 
 impl IndexBlock {
     pub fn new() -> Self {
@@ -209,7 +207,6 @@ pub struct Footer {
     pub min_table_key: TableKey,
     pub max_table_key: TableKey,
 }
-const FOOTER_SIZE: usize = mem::size_of::<usize>() + 2 * TABLE_KEY_SIZE;
 
 impl Footer {
     pub fn new(
@@ -261,3 +258,5 @@ impl Footer {
         })
     }
 }
+
+// TODO: add unit testing.

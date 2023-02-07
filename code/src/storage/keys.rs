@@ -75,6 +75,10 @@ impl TableKey {
         table_key.user_val = reader.read_varint()?;
         Ok(table_key)
     }
+
+    pub fn as_lookup_key(&self) -> LookupKey {
+        LookupKey::new(self.user_key, self.seq_num)
+    }
 }
 
 // implement necessary traits so that TableKey could be compared and sorted.
@@ -152,4 +156,13 @@ impl LookupKey {
             user_val: UserValue::default(),
         }
     }
+
+    pub fn encode_to_bytes(&self) -> Vec<u8> {
+        let mut encoded = Vec::new();
+        encoded.write_varint(self.user_key).unwrap();
+        encoded.write_varint(self.seq_num).unwrap();
+        encoded
+    }
 }
+
+// TODO: add unit testing for encoding and decoding.

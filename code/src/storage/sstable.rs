@@ -73,6 +73,10 @@ pub struct SSTableIterator {
 
 impl TableKeyIterator for SSTableIterator {
     fn seek(&mut self, lookup_key: &LookupKey) {
+        // TODO:
+        // inspect the bloom filter.
+        // if not in the sstable, set to invalid.
+
         // binary search the lookup key by fence pointers.
         if let Some(data_block_idx) = self.reader.index_block.binary_search(lookup_key) {
             self.reader.advance_to(data_block_idx);
@@ -146,7 +150,7 @@ impl SSTableReader {
             .seek_relative(footer.filter_block_offset as i64)
             .unwrap();
         reader.read_exact(&mut buf).unwrap();
-        let filter_block = FilterBlock::decode_from_bytes(&buf, footer.num_table_keys).unwrap();
+        let filter_block = FilterBlock::decode_from_bytes(&buf);
 
         // reset the seek cursor and read the index block.
         reader
@@ -256,6 +260,7 @@ impl SSTableWriter {
         ));
 
         self.data_block.add(table_key);
+
         self.num_table_keys += 1;
 
         if self.data_block.size() >= BLOCK_SIZE {
@@ -268,10 +273,6 @@ impl SSTableWriter {
         self.writer
             .write(&self.data_block.encode_to_bytes())
             .unwrap();
-
-        // add a bloom filter for the data block.
-        self.filter_block
-            .add(BloomFilter::from_data_block(&self.data_block));
 
         // add a fence pointer for the data block.
         self.index_block.add(self.data_block.fence_pointer());

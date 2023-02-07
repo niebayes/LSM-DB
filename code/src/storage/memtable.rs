@@ -36,6 +36,7 @@ impl<'a> TableKeyIterator for MemTableIterator<'a> {
     }
 
     fn curr(&self) -> Option<TableKey> {
+        // FIXME: Is a clone of option also clones the wrapper value?
         self.curr_table_key.clone()
     }
 
@@ -67,11 +68,8 @@ impl MemTable {
     /// point query the value associated of the given key.
     /// the iterator gives us a flatten view of the keys stored in the memtable:
     /// keys with the same user key are clustered together and form a chunk.
-    /// each chunk contains keys with different sequence numbers and keys with lower
+    /// each chunk contains keys with different sequence numbers and keys with higher
     /// sequence numbers are iterated first.
-    /// for point query, we first locate the chunk having the same user key as the lookup key,
-    /// and then we inspect keys in the chunk from left to right.
-    /// the latest key visible to the snapshot is the target key.
     pub fn get(&self, lookup_key: &LookupKey) -> (Option<UserValue>, bool) {
         let mut iter = self.iter();
         iter.seek(lookup_key);
@@ -139,3 +137,5 @@ impl Display for MemTableStats {
         write!(f, "{}", stats)
     }
 }
+
+// TODO: add unit testing.

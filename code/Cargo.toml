@@ -9,5 +9,7 @@ edition = "2021"
 clap = { version = "4.0.32", features = ["derive"] }
 integer-encoding = "3.0.4"
 log = "0.4"
+murmur3 = "0.5.2"
 rand = "0.8.5"
 rustyline = "10.0.0"
+xxhash-rust = { version = "0.8.6", features = ["xxh3"] }
