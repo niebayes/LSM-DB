@@ -1,5 +1,4 @@
 use super::block::*;
-use super::bloom_filter::BloomFilter;
 use super::iterator::TableKeyIterator;
 use super::keys::*;
 use crate::util::types::*;
@@ -73,9 +72,10 @@ pub struct SSTableIterator {
 
 impl TableKeyIterator for SSTableIterator {
     fn seek(&mut self, lookup_key: &LookupKey) {
-        // TODO:
-        // inspect the bloom filter.
-        // if not in the sstable, set to invalid.
+        // if the key definitely not in the sstable, terminates searching.
+        if !self.reader.filter_block.maybe_contain(lookup_key) {
+            return;
+        }
 
         // binary search the lookup key by fence pointers.
         if let Some(data_block_idx) = self.reader.index_block.binary_search(lookup_key) {
@@ -134,6 +134,8 @@ impl SSTableReader {
     pub fn new(file_num: FileNum) -> Self {
         let file = File::open(sstable_file_name(file_num)).unwrap();
         let file_size = file.metadata().unwrap().len();
+        assert_eq!(file_size as usize % BLOCK_SIZE, 0);
+
         let mut reader = BufReader::new(file);
 
         // read the footer.
@@ -144,8 +146,10 @@ impl SSTableReader {
         let footer = Footer::decode_from_bytes(&buf).unwrap();
 
         // reset the seek cursor and read the filter block.
-        reader.seek_relative(-(footer_offset as i64)).unwrap();
-        buf.clear();
+        reader
+            .seek_relative(-((footer_offset + BLOCK_SIZE) as i64))
+            .unwrap();
+        buf = make_block_buf();
         reader
             .seek_relative(footer.filter_block_offset as i64)
             .unwrap();
@@ -154,18 +158,19 @@ impl SSTableReader {
 
         // reset the seek cursor and read the index block.
         reader
-            .seek_relative(-(footer.filter_block_offset as i64))
+            .seek_relative(-((footer.filter_block_offset + BLOCK_SIZE) as i64))
             .unwrap();
-        buf.clear();
+        buf = make_block_buf();
         reader
             .seek_relative(footer.index_block_offset as i64)
             .unwrap();
         reader.read_exact(&mut buf).unwrap();
-        let index_block = IndexBlock::decode_from_bytes(&buf, footer.num_table_keys).unwrap();
+        let num_data_blocks = table_keys_to_blocks(footer.num_table_keys);
+        let index_block = IndexBlock::decode_from_bytes(&buf, num_data_blocks).unwrap();
 
         // reset the seek cursor to prepare for reading data blocks.
         reader
-            .seek_relative(-(footer.index_block_offset as i64))
+            .seek_relative(-((footer.index_block_offset + BLOCK_SIZE) as i64))
             .unwrap();
 
         Self {
@@ -175,7 +180,7 @@ impl SSTableReader {
             index_block,
             total_num_table_keys: footer.num_table_keys,
             next_data_block_idx: 0,
-            num_data_blocks: table_keys_to_blocks(footer.num_table_keys),
+            num_data_blocks,
         }
     }
 
@@ -189,22 +194,19 @@ impl SSTableReader {
         // read the next data block into the buffer.
         let block_offset = self.next_data_block_idx * BLOCK_SIZE;
         self.reader.seek_relative(block_offset as i64).unwrap();
-        let mut buf = vec![0; BLOCK_SIZE];
+        let mut buf = make_block_buf();
         self.reader.read_exact(&mut buf).unwrap();
-        // reset cursor.
-        self.reader.seek_relative(-(block_offset as i64)).unwrap();
+        // reset cursor to the file start.
+        self.reader
+            .seek_relative(-((block_offset + BLOCK_SIZE) as i64))
+            .unwrap();
 
         // #table keys in the next data block.
-        let num_table_keys = self.total_num_table_keys - KEYS_PER_BLOCK * self.next_data_block_idx;
+        let remaining_num_table_keys =
+            self.total_num_table_keys - KEYS_PER_BLOCK * self.next_data_block_idx;
+        let num_table_keys = cmp::min(KEYS_PER_BLOCK, remaining_num_table_keys);
 
-        let mut data_block = DataBlock::new();
-        for i in 0..num_table_keys {
-            let offset = i * TABLE_KEY_SIZE;
-            let table_key =
-                TableKey::decode_from_bytes(&buf[offset..offset + TABLE_KEY_SIZE].to_owned())
-                    .unwrap();
-            data_block.add(table_key);
-        }
+        let data_block = DataBlock::decode_from_bytes(&buf, num_table_keys).unwrap();
         self.data_block = Some(data_block);
 
         self.next_data_block_idx += 1;
@@ -226,7 +228,7 @@ impl SSTableReader {
 struct SSTableWriter {
     file_num: FileNum,
     writer: BufWriter<File>,
-    data_block: DataBlock,
+    data_block: Option<DataBlock>,
     filter_block: FilterBlock,
     index_block: IndexBlock,
     num_table_keys: usize,
@@ -236,11 +238,11 @@ struct SSTableWriter {
 
 impl SSTableWriter {
     fn new(file_num: FileNum) -> Self {
-        let file = File::open(sstable_file_name(file_num)).unwrap();
+        let file = File::create(sstable_file_name(file_num)).unwrap();
         SSTableWriter {
             file_num,
             writer: BufWriter::new(file),
-            data_block: DataBlock::new(),
+            data_block: None,
             filter_block: FilterBlock::new(),
             index_block: IndexBlock::new(),
             num_table_keys: 0,
@@ -250,38 +252,57 @@ impl SSTableWriter {
     }
 
     pub fn push(&mut self, table_key: TableKey) {
-        self.min_table_key = Some(cmp::min(
-            self.min_table_key.as_ref().unwrap().clone(),
-            table_key.clone(),
-        ));
-        self.max_table_key = Some(cmp::max(
-            self.max_table_key.as_ref().unwrap().clone(),
-            table_key.clone(),
-        ));
+        if self.min_table_key.is_none() {
+            self.min_table_key = Some(table_key.clone());
+        } else {
+            self.min_table_key = Some(cmp::min(
+                self.min_table_key.as_ref().unwrap().clone(),
+                table_key.clone(),
+            ));
+        }
 
-        self.data_block.add(table_key);
+        if self.max_table_key.is_none() {
+            self.max_table_key = Some(table_key.clone());
+        } else {
+            self.max_table_key = Some(cmp::max(
+                self.max_table_key.as_ref().unwrap().clone(),
+                table_key.clone(),
+            ));
+        }
 
+        self.filter_block.insert(&table_key);
+        if self.data_block.is_none() {
+            self.data_block = Some(DataBlock::new());
+        }
+        self.data_block.as_mut().unwrap().add(table_key);
         self.num_table_keys += 1;
 
-        if self.data_block.size() >= BLOCK_SIZE {
+        // ensure the flushing happens before the data block is full.
+        if self.data_block.as_ref().unwrap().size() >= BLOCK_SIZE - TABLE_KEY_SIZE {
             self.flush_data_block();
         }
     }
 
-    // FIXME: Is it necessary to apply padding on a data block? Seems no.
     fn flush_data_block(&mut self) {
         self.writer
-            .write(&self.data_block.encode_to_bytes())
+            .write(&self.data_block.as_ref().unwrap().encode_to_bytes())
             .unwrap();
+        self.writer.flush().unwrap();
 
         // add a fence pointer for the data block.
-        self.index_block.add(self.data_block.fence_pointer());
+        self.index_block
+            .add(self.data_block.as_ref().unwrap().fence_pointer());
 
-        self.data_block.reset();
+        self.data_block = None;
     }
 
     pub fn done(&mut self) -> SSTable {
+        if self.data_block.is_some() {
+            self.flush_data_block();
+        }
+
         // flush other blocks.
+        // padding is done inside `encode_to_bytes`.
         self.writer
             .write(&self.filter_block.encode_to_bytes())
             .unwrap();
@@ -301,6 +322,7 @@ impl SSTableWriter {
             self.max_table_key.as_ref().unwrap().clone(),
         );
         self.writer.write(&footer.encode_to_bytes()).unwrap();
+        self.writer.flush().unwrap();
 
         // create an in-memory sstable filemeta.
         SSTable::new(
@@ -364,6 +386,7 @@ impl SSTableWriterBatch {
     }
 
     pub fn done(&mut self) -> (Vec<Rc<SSTable>>, FileNum) {
+        // `done` could be called when all data blocks are flushed or there's one pending-to-be-flushed data block.
         if self.sstable_writer.is_some() {
             self.harness();
         }
@@ -410,7 +433,7 @@ impl Display for SSTableStats {
         }
 
         stats += &format!(
-            "visible table keys:\n\tcount: {}",
+            "\nvisible table keys:\n\tcount: {}",
             self.visible_table_keys.len()
         );
         for table_key in self.visible_table_keys.iter() {
@@ -429,7 +452,7 @@ impl SSTable {
         let mut iter = self.iter().unwrap();
         let mut last_user_key = None;
         while let Some(table_key) = iter.next() {
-            if last_user_key.is_none() || last_user_key.unwrap() == table_key.user_key {
+            if last_user_key.is_none() || last_user_key.unwrap() != table_key.user_key {
                 last_user_key = Some(table_key.user_key);
                 visible_table_keys.push(format!("{}", table_key));
             }
@@ -452,4 +475,45 @@ fn sstable_file_name(file_num: FileNum) -> String {
 
 fn make_block_buf() -> Vec<u8> {
     vec![0; BLOCK_SIZE]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn writer_reader() {
+        let file_num = 42;
+        let mut writer = SSTableWriter::new(file_num);
+
+        let num_table_keys = 200;
+        for i in 0..num_table_keys {
+            let table_key = TableKey::new(i, i as usize, WriteType::Put, i);
+            writer.push(table_key);
+        }
+        writer.done();
+
+        let reader = SSTableReader::new(file_num);
+
+        // check num_table_keys.
+        assert_eq!(writer.num_table_keys, reader.total_num_table_keys);
+
+        // check filter block.
+        {
+            let writer_bytes = writer.filter_block.encode_to_bytes();
+            let reader_bytes = reader.filter_block.encode_to_bytes();
+            for i in 0..BLOCK_SIZE {
+                assert_eq!(writer_bytes[i], reader_bytes[i]);
+            }
+        }
+
+        // check index block.
+        {
+            let writer_bytes = writer.index_block.encode_to_bytes();
+            let reader_bytes = reader.index_block.encode_to_bytes();
+            for i in 0..BLOCK_SIZE {
+                assert_eq!(writer_bytes[i], reader_bytes[i]);
+            }
+        }
+    }
 }

@@ -1,7 +1,7 @@
 use crate::util::types::*;
 use integer_encoding::*;
 use std::cmp::Ordering;
-use std::fmt::Display;
+use std::fmt::{Debug, Display};
 use std::io;
 use std::mem;
 
@@ -52,27 +52,39 @@ impl TableKey {
         }
     }
 
+    /// make a table key with all fields set to i.
+    pub fn identity(i: i32) -> Self {
+        Self {
+            user_key: i,
+            seq_num: i as SeqNum,
+            write_type: WriteType::Put,
+            user_val: i,
+        }
+    }
+
     pub fn encode_to_bytes(&self) -> Vec<u8> {
         let mut encoded = Vec::new();
-        encoded.write_varint(self.user_key).unwrap();
-        encoded.write_varint(self.seq_num).unwrap();
-        encoded.write_varint(self.write_type as u8).unwrap();
-        encoded.write_varint(self.user_val).unwrap();
+        // decoding is based on the assumption that the an encoded table key is of size TABLE_KEY_SIZE.
+        // hence, write_fixedint instead of write_varint is used here.
+        encoded.write_fixedint(self.user_key).unwrap();
+        encoded.write_fixedint(self.seq_num).unwrap();
+        encoded.write_fixedint(self.write_type as u8).unwrap();
+        encoded.write_fixedint(self.user_val).unwrap();
         encoded
     }
 
     pub fn decode_from_bytes(bytes: &Vec<u8>) -> Result<Self, io::Error> {
         let mut reader = bytes.as_slice();
         let mut table_key = TableKey::default();
-        table_key.user_key = reader.read_varint()?;
-        table_key.seq_num = reader.read_varint()?;
-        let write_type = match reader.read_varint::<u8>()? {
-            0 => WriteType::Put,
-            1 => WriteType::Delete,
+        table_key.user_key = reader.read_fixedint()?;
+        table_key.seq_num = reader.read_fixedint()?;
+        let write_type = match reader.read_fixedint::<u8>()? {
+            1 => WriteType::Put,
+            2 => WriteType::Delete,
             other => panic!("Unexpected write type: {}", other),
         };
         table_key.write_type = write_type;
-        table_key.user_val = reader.read_varint()?;
+        table_key.user_val = reader.read_fixedint()?;
         Ok(table_key)
     }
 
@@ -136,6 +148,16 @@ impl Display for TableKey {
     }
 }
 
+impl Debug for TableKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "[{} | {} | {} | {}]",
+            self.user_key, self.seq_num, self.write_type, self.user_val
+        )
+    }
+}
+
 /// lookup key type.
 /// it's literally a table key without user value and write type.
 pub struct LookupKey {
@@ -159,10 +181,24 @@ impl LookupKey {
 
     pub fn encode_to_bytes(&self) -> Vec<u8> {
         let mut encoded = Vec::new();
-        encoded.write_varint(self.user_key).unwrap();
-        encoded.write_varint(self.seq_num).unwrap();
+        encoded.write_fixedint(self.user_key).unwrap();
+        encoded.write_fixedint(self.seq_num).unwrap();
         encoded
     }
 }
 
-// TODO: add unit testing for encoding and decoding.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn table_key_encode_decode() {
+        let table_key = TableKey::new(1, 2, WriteType::Put, 3);
+        let bytes = table_key.encode_to_bytes();
+        let decoded_table_key = TableKey::decode_from_bytes(&bytes).unwrap();
+        assert_eq!(table_key.user_key, decoded_table_key.user_key);
+        assert_eq!(table_key.seq_num, decoded_table_key.seq_num);
+        assert_eq!(table_key.write_type, decoded_table_key.write_type);
+        assert_eq!(table_key.user_val, decoded_table_key.user_val);
+    }
+}

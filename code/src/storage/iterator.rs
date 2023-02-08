@@ -27,8 +27,8 @@ impl<'a> PartialOrd for TableKeyIteratorType<'a> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         match (self.curr(), other.curr()) {
             (Some(head), Some(other_head)) => return head.partial_cmp(&other_head),
-            (Some(_), None) => return Some(Ordering::Less),
-            (None, Some(_)) => return Some(Ordering::Greater),
+            (Some(_), None) => return Some(Ordering::Greater),
+            (None, Some(_)) => return Some(Ordering::Less),
             (None, None) => return Some(Ordering::Equal),
         }
     }
@@ -38,8 +38,8 @@ impl<'a> Ord for TableKeyIteratorType<'a> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         match (self.curr(), other.curr()) {
             (Some(head), Some(other_head)) => return head.cmp(&other_head),
-            (Some(_), None) => return Ordering::Less,
-            (None, Some(_)) => return Ordering::Greater,
+            (Some(_), None) => return Ordering::Greater,
+            (None, Some(_)) => return Ordering::Less,
             (None, None) => return Ordering::Equal,
         }
     }

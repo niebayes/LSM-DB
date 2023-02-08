@@ -1,4 +1,4 @@
-use crate::db::db::Db;
+use crate::db::db::{Config, Db};
 use crate::server::cmd::{print_help, Command};
 use crate::util::types::{UserEntry, UserKey, UserValue};
 use rustyline::error::ReadlineError;
@@ -146,6 +146,30 @@ impl Server {
                 println!("{}", self.db.stats());
             }
             _ => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // TODO: document each unit tests. Rename them properly.
+    #[test]
+    fn put_get_sequential() {
+        let db = Db::new(Config::test());
+        let mut server = Server::new(db);
+        let num_table_keys = 1000;
+        for i in 0..num_table_keys {
+            let put = Command::Put(i, i);
+            server.handle_cmd(put);
+            // TODO: add indent level param to each stats method.
+            server.handle_cmd(Command::PrintStats);
+        }
+
+        for i in 0..num_table_keys {
+            let get = Command::Get(i);
+            server.handle_cmd(get);
         }
     }
 }

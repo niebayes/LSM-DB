@@ -1,6 +1,7 @@
 use super::iterator::TableKeyIterator;
 use super::keys::*;
 use crate::util::types::*;
+use rand::Rng;
 use std::collections::BTreeSet;
 use std::fmt::Display;
 
@@ -96,7 +97,7 @@ impl MemTable {
         let mut iter = self.iter();
         let mut last_user_key = None;
         while let Some(table_key) = iter.next() {
-            if last_user_key.is_none() || last_user_key.unwrap() == table_key.user_key {
+            if last_user_key.is_none() || last_user_key.unwrap() != table_key.user_key {
                 last_user_key = Some(table_key.user_key);
                 visible_table_keys.push(format!("{}", table_key));
             }
@@ -127,7 +128,7 @@ impl Display for MemTableStats {
         }
 
         stats += &format!(
-            "visible table keys:\n\tcount: {}",
+            "\nvisible table keys:\n\tcount: {}",
             self.visible_table_keys.len()
         );
         for table_key in self.visible_table_keys.iter() {
@@ -138,4 +139,56 @@ impl Display for MemTableStats {
     }
 }
 
-// TODO: add unit testing.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    /// on each iteration, randomly generate a number chosen from -1, 0, 1.
+    /// 1 => put (0, i).
+    /// -1 => delete (0).
+    /// 0 => get(0).
+    /// if the last op is put, check that the got value equals with the last put value.
+    /// if the last op is delete, check that the key is deleted.
+    /// if the last op is get, skip.
+    fn put_delele_get() {
+        let mut mem = MemTable::new();
+        let num_table_keys = 100;
+
+        let mut rng = rand::thread_rng();
+        let mut last_rand_num = 0;
+        let mut last_put_val = None;
+        for i in 0..num_table_keys {
+            match rng.gen_range(-1..=1) {
+                1 => {
+                    let table_key = TableKey::new(0, i, WriteType::Put, i as UserValue);
+                    mem.put(table_key);
+                    last_rand_num = 1;
+                    last_put_val = Some(i as UserValue);
+                }
+                -1 => {
+                    let table_key = TableKey::new(0, i, WriteType::Delete, i as UserValue);
+                    mem.put(table_key);
+                    last_rand_num = -1;
+                }
+                0 => {
+                    let lookup_key = LookupKey::new(0, i);
+                    let (val, deleted) = mem.get(&lookup_key);
+                    if i > 0 {
+                        match last_rand_num {
+                            1 => {
+                                assert_eq!(deleted, false);
+                                assert_eq!(val.unwrap(), last_put_val.unwrap());
+                            }
+                            -1 => {
+                                assert_eq!(deleted, true);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                _ => panic!(),
+            }
+        }
+    }
+}

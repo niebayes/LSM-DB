@@ -45,7 +45,7 @@ impl Command {
             }
             "d" | "delete" => {
                 if tokens.len() == 2 && is_valid_key(tokens[1]) {
-                    return Some(Command::Get(tokens[1].parse().unwrap()));
+                    return Some(Command::Delete(tokens[1].parse().unwrap()));
                 }
                 None
             }

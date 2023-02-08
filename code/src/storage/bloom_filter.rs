@@ -25,13 +25,14 @@ impl BloomFilter {
     /// h(key) = (h1(key) + k * h2(key)) % M.
     /// where h1 is murmur3, h2 is xxhash, and 0 <= k < K.
     fn hash(key: &[u8], k: usize) -> usize {
-        ((murmur3_x86_128(&mut key.clone(), SEED).unwrap() + k as u128 * xxh3_128(key)) as usize)
-            % M
+        let h1 = murmur3_x86_128(&mut key.clone(), SEED).unwrap() as usize % M;
+        let h2 = xxh3_128(key) as usize % M;
+        (h1 + k * h2) % M
     }
 
     pub fn insert(&mut self, table_key: &TableKey) {
         // hashed indexes of all hash functions.
-        let mut bit_indexes = HashSet::new();
+        let mut bit_indexes = HashSet::with_capacity(K);
         let key = table_key.as_lookup_key().encode_to_bytes();
         let key = key.as_slice();
         for k in 0..K {

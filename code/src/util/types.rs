@@ -1,14 +1,24 @@
-use std::fmt::Display;
+use std::fmt::{Debug, Display};
 
 /// write type.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum WriteType {
+    Empty,
     Put,
     Delete,
-    Empty,
 }
 
 impl Display for WriteType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WriteType::Put => write!(f, "P"),
+            WriteType::Delete => write!(f, "D"),
+            WriteType::Empty => write!(f, "NaN"),
+        }
+    }
+}
+
+impl Debug for WriteType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             WriteType::Put => write!(f, "P"),

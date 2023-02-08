@@ -1,6 +1,7 @@
 use super::bloom_filter::BloomFilter;
 use super::iterator::TableKeyIterator;
 use super::keys::{LookupKey, TableKey, TABLE_KEY_SIZE};
+use crate::util::types::*;
 use integer_encoding::*;
 use std::mem;
 use std::{cmp, io};
@@ -33,10 +34,14 @@ impl DataBlock {
     }
 
     pub fn add(&mut self, table_key: TableKey) {
-        self.max_table_key = Some(cmp::max(
-            self.max_table_key.as_ref().unwrap().clone(),
-            table_key.clone(),
-        ));
+        if self.max_table_key.is_none() {
+            self.max_table_key = Some(table_key.clone());
+        } else {
+            self.max_table_key = Some(cmp::max(
+                self.max_table_key.as_ref().unwrap().clone(),
+                table_key.clone(),
+            ));
+        }
         self.table_keys.push(table_key);
     }
 
@@ -48,17 +53,13 @@ impl DataBlock {
         self.table_keys.len() * TABLE_KEY_SIZE
     }
 
-    pub fn reset(&mut self) {
-        self.table_keys.clear();
-        self.max_table_key = None;
-    }
-
     pub fn encode_to_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::new();
+        let mut bytes = Vec::with_capacity(BLOCK_SIZE);
         for table_key in self.table_keys.iter() {
             bytes.append(&mut table_key.encode_to_bytes());
         }
         maybe_pad(&mut bytes);
+        assert_eq!(bytes.len(), BLOCK_SIZE);
         bytes
     }
 
@@ -135,7 +136,10 @@ impl FilterBlock {
     }
 
     pub fn encode_to_bytes(&self) -> Vec<u8> {
-        self.bloom_filter.encode_to_bytes()
+        let mut bytes = self.bloom_filter.encode_to_bytes();
+        maybe_pad(&mut bytes);
+        assert_eq!(bytes.len(), BLOCK_SIZE);
+        bytes
     }
 
     pub fn decode_from_bytes(bytes: &Vec<u8>) -> Self {
@@ -183,11 +187,11 @@ impl IndexBlock {
             bytes.append(&mut fence_pointer.encode_to_bytes());
         }
         maybe_pad(&mut bytes);
+        assert_eq!(bytes.len(), BLOCK_SIZE);
         bytes
     }
 
-    pub fn decode_from_bytes(bytes: &Vec<u8>, num_table_keys: usize) -> Result<Self, io::Error> {
-        let num_data_blocks = table_keys_to_blocks(num_table_keys);
+    pub fn decode_from_bytes(bytes: &Vec<u8>, num_data_blocks: usize) -> Result<Self, io::Error> {
         let mut index_block = IndexBlock::new();
         for i in 0..num_data_blocks {
             let offset = i * TABLE_KEY_SIZE;
@@ -227,21 +231,22 @@ impl Footer {
 
     pub fn encode_to_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
-        bytes.write_varint(self.num_table_keys).unwrap();
-        bytes.write_varint(self.filter_block_offset).unwrap();
-        bytes.write_varint(self.index_block_offset).unwrap();
+        bytes.write_fixedint(self.num_table_keys).unwrap();
+        bytes.write_fixedint(self.filter_block_offset).unwrap();
+        bytes.write_fixedint(self.index_block_offset).unwrap();
         bytes.append(&mut self.min_table_key.encode_to_bytes());
         bytes.append(&mut self.max_table_key.encode_to_bytes());
         maybe_pad(&mut bytes);
+        assert_eq!(bytes.len(), BLOCK_SIZE);
         bytes
     }
 
     pub fn decode_from_bytes(bytes: &Vec<u8>) -> Result<Self, io::Error> {
         let mut reader = bytes.as_slice();
 
-        let num_table_keys = reader.read_varint()?;
-        let filter_block_offset = reader.read_varint()?;
-        let index_block_offset = reader.read_varint()?;
+        let num_table_keys = reader.read_fixedint()?;
+        let filter_block_offset = reader.read_fixedint()?;
+        let index_block_offset = reader.read_fixedint()?;
         let offset = 3 * mem::size_of::<usize>();
         let min_table_key =
             TableKey::decode_from_bytes(&bytes[offset..offset + TABLE_KEY_SIZE].to_owned())?;
@@ -259,4 +264,78 @@ impl Footer {
     }
 }
 
-// TODO: add unit testing.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn data_block_encode_decode() {
+        let mut data_block = DataBlock::new();
+        let num_table_keys = 200;
+        for i in 0..num_table_keys {
+            let table_key = TableKey::identity(i);
+            data_block.add(table_key);
+        }
+
+        let bytes = data_block.encode_to_bytes();
+        let decoded_data_block =
+            DataBlock::decode_from_bytes(&bytes, num_table_keys as usize).unwrap();
+
+        assert_eq!(
+            data_block.max_table_key.as_ref().unwrap().clone(),
+            decoded_data_block.max_table_key.as_ref().unwrap().clone()
+        );
+
+        for i in 0..num_table_keys {
+            assert_eq!(
+                data_block.table_keys[i as usize],
+                decoded_data_block.table_keys[i as usize]
+            );
+        }
+    }
+
+    #[test]
+    fn filter_block_encode_decode() {
+        let mut filter_block = FilterBlock::new();
+        let num_table_keys = 500;
+        for i in 0..num_table_keys {
+            let table_key = TableKey::identity(i);
+            filter_block.insert(&table_key);
+        }
+
+        let bytes1 = filter_block.encode_to_bytes();
+        let bytes2 = FilterBlock::decode_from_bytes(&bytes1).encode_to_bytes();
+
+        for i in 0..BLOCK_SIZE {
+            assert_eq!(bytes1[i], bytes2[i]);
+        }
+    }
+
+    #[test]
+    fn index_block_encode_decode() {
+        let mut index_block = IndexBlock::new();
+        let num_table_keys: usize = 10;
+        for i in 0..num_table_keys {
+            index_block.add(TableKey::new(
+                i as UserKey,
+                i,
+                WriteType::Put,
+                i as UserValue,
+            ));
+        }
+        let bytes = index_block.encode_to_bytes();
+        let decoded_index_block = IndexBlock::decode_from_bytes(&bytes, num_table_keys).unwrap();
+
+        assert_eq!(
+            index_block.fence_pointers.len(),
+            decoded_index_block.fence_pointers.len()
+        );
+
+        for i in 0..num_table_keys {
+            assert_eq!(
+                index_block.fence_pointers[i],
+                decoded_index_block.fence_pointers[i]
+            );
+        }
+    }
+}
