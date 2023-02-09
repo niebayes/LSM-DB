@@ -88,3 +88,4 @@ impl BloomFilter {
 }
 
 // TODO: add unit testing for bloom filter.
+// FIXME: the implementation of bloom filter is broken.

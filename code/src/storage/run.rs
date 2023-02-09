@@ -35,8 +35,8 @@ impl Run {
     }
 
     pub fn get(&self, lookup_key: &LookupKey) -> (Option<TableKey>, bool) {
-        if &lookup_key.as_table_key() >= self.min_table_key.as_ref().unwrap()
-            && &lookup_key.as_table_key() <= self.max_table_key.as_ref().unwrap()
+        if lookup_key.user_key >= self.min_table_key.as_ref().unwrap().user_key
+            && lookup_key.user_key <= self.max_table_key.as_ref().unwrap().user_key
         {
             if let Some(sstable) = self.binary_search(lookup_key) {
                 return sstable.get(lookup_key);
@@ -45,25 +45,37 @@ impl Run {
         (None, false)
     }
 
+    // binary search the first sstable that has a greater max user key than the lookup key's user key.
     fn binary_search(&self, lookup_key: &LookupKey) -> Option<Rc<SSTable>> {
-        match self
-            .sstables
-            .binary_search_by(|sstable| sstable.max_table_key.cmp(&lookup_key.as_table_key()))
+        let mut lo = 0; // start of the search space.
+        let mut len = self.sstables.len(); // search space length.
+
+        // loop inv: the search space is not empty.
+        while len > 0 {
+            let half = len / 2; // the length of the left half of the search space.
+            let mid = lo + half;
+            let sstable = self.sstables.get(mid).unwrap();
+
+            // if adjacent sstables contain the same user key, only the left sstable might be target sstable.
+            // so the lower-bound binary searching is applied here.
+            if sstable.max_table_key.user_key < lookup_key.user_key {
+                // proceed searching in the right half.
+                lo = mid + 1;
+                len -= half + 1;
+            } else {
+                // proceed searching in the left half.
+                len = half;
+            }
+        }
+
+        // further check that this sstable maybe contain the target key.
+        let sstable = self.sstables.get(lo).unwrap();
+        if sstable.min_table_key.user_key <= lookup_key.user_key
+            && sstable.max_table_key.user_key >= lookup_key.user_key
         {
-            Ok(i) => {
-                if let Some(sstable) = self.sstables.get(i) {
-                    Some(sstable.clone())
-                } else {
-                    None
-                }
-            }
-            Err(i) => {
-                if let Some(sstable) = self.sstables.get(i - 1) {
-                    Some(sstable.clone())
-                } else {
-                    None
-                }
-            }
+            Some(sstable.clone())
+        } else {
+            None
         }
     }
 

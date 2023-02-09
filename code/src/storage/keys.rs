@@ -192,6 +192,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn table_key_order() {
+        let mut a = TableKey::new(0, 1, WriteType::Put, 0);
+        let mut b = TableKey::new(1, 1, WriteType::Put, 0);
+        assert!(a < b);
+
+        a = TableKey::new(1, 1, WriteType::Put, 0);
+        assert_eq!(a, b);
+
+        b = TableKey::new(0, 1, WriteType::Put, 0);
+        assert!(a > b);
+
+        b = TableKey::new(1, 1000, WriteType::Put, 0);
+        a = TableKey::new(0, 800, WriteType::Put, 0);
+        let c = TableKey::new(100, 20, WriteType::Put, 0);
+        assert!(a <= b);
+        assert!(b <= c);
+    }
+
+    #[test]
     fn table_key_encode_decode() {
         let table_key = TableKey::new(1, 2, WriteType::Put, 3);
         let bytes = table_key.encode_to_bytes();

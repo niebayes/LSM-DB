@@ -166,18 +166,33 @@ impl IndexBlock {
 
     /// returns Some(i) if the key might exist in the sstable.
     pub fn binary_search(&self, lookup_key: &LookupKey) -> Option<usize> {
-        match self
-            .fence_pointers
-            .binary_search_by(|fence_pointer| fence_pointer.cmp(&lookup_key.as_table_key()))
-        {
-            Ok(i) => return Some(i),
-            Err(i) => {
-                if i < self.fence_pointers.len() {
-                    Some(i)
-                } else {
-                    None
-                }
+        let mut lo = 0; // start of the search space.
+        let mut len = self.fence_pointers.len(); // search space length.
+
+        // loop inv: the search space is not empty.
+        while len > 0 {
+            let half = len / 2; // the length of the left half of the search space.
+            let mid = lo + half;
+            let fence_pointer = self.fence_pointers.get(mid).unwrap();
+
+            // if adjacent sstables contain the same user key, only the left sstable might be target sstable.
+            // so the lower-bound binary searching is applied here.
+            if fence_pointer.user_key < lookup_key.user_key {
+                // proceed searching in the right half.
+                lo = mid + 1;
+                len -= half + 1;
+            } else {
+                // proceed searching in the left half.
+                len = half;
             }
+        }
+
+        // further check that this sstable maybe contain the target key.
+        let fence_pointer = self.fence_pointers.get(lo).unwrap();
+        if fence_pointer.user_key >= lookup_key.user_key {
+            Some(lo)
+        } else {
+            None
         }
     }
 

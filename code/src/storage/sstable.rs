@@ -37,13 +37,12 @@ impl SSTable {
     }
 
     pub fn get(&self, lookup_key: &LookupKey) -> (Option<TableKey>, bool) {
-        if lookup_key.as_table_key() >= self.min_table_key
-            && lookup_key.as_table_key() <= self.max_table_key
+        if lookup_key.user_key >= self.min_table_key.user_key
+            && lookup_key.user_key <= self.max_table_key.user_key
         {
             let mut iter = self.iter().unwrap();
             iter.seek(lookup_key);
-            if iter.valid() {
-                let table_key = iter.curr().unwrap();
+            if let Some(table_key) = iter.curr() {
                 if table_key.user_key == lookup_key.user_key {
                     match table_key.write_type {
                         WriteType::Put => return (Some(table_key), false),
@@ -73,13 +72,15 @@ pub struct SSTableIterator {
 impl TableKeyIterator for SSTableIterator {
     fn seek(&mut self, lookup_key: &LookupKey) {
         // if the key definitely not in the sstable, terminates searching.
-        if !self.reader.filter_block.maybe_contain(lookup_key) {
-            return;
-        }
+        // FIXME: correct the bloom filter implementation.
+        // if !self.reader.filter_block.maybe_contain(lookup_key) {
+        //     return;
+        // }
 
         // binary search the lookup key by fence pointers.
         if let Some(data_block_idx) = self.reader.index_block.binary_search(lookup_key) {
             self.reader.advance_to(data_block_idx);
+            self.reader.next();
             self.data_block_iter = Some(self.reader.data_block.as_ref().unwrap().iter());
             self.data_block_iter.as_mut().unwrap().seek(lookup_key);
         }
@@ -278,7 +279,7 @@ impl SSTableWriter {
         self.num_table_keys += 1;
 
         // ensure the flushing happens before the data block is full.
-        if self.data_block.as_ref().unwrap().size() >= BLOCK_SIZE - TABLE_KEY_SIZE {
+        if self.data_block.as_ref().unwrap().size() > BLOCK_SIZE - TABLE_KEY_SIZE {
             self.flush_data_block();
         }
     }
@@ -343,6 +344,7 @@ impl SSTableWriter {
 pub struct SSTableWriterBatch {
     sstable_writer: Option<SSTableWriter>,
     next_file_num: FileNum,
+    sstable_size_capacity: usize,
     outputs: Vec<Rc<SSTable>>,
     pub min_table_key: Option<TableKey>,
     pub max_table_key: Option<TableKey>,
@@ -350,10 +352,11 @@ pub struct SSTableWriterBatch {
 
 /// receives table keys and write them into a batch of sstable files.
 impl SSTableWriterBatch {
-    pub fn new(next_file_num: FileNum) -> Self {
+    pub fn new(next_file_num: FileNum, sstable_size_capacity: usize) -> Self {
         Self {
             sstable_writer: None,
             next_file_num,
+            sstable_size_capacity,
             outputs: Vec::new(),
             min_table_key: None,
             max_table_key: None,
@@ -374,10 +377,14 @@ impl SSTableWriterBatch {
         }
 
         self.sstable_writer.as_mut().unwrap().push(table_key);
+        if self.sstable_writer.as_ref().unwrap().file_size()
+            > self.sstable_size_capacity - TABLE_KEY_SIZE
+        {
+            self.harness();
+        }
     }
 
     /// harness an sstable.
-    // TODO: rewrite harness logic in db.
     pub fn harness(&mut self) {
         self.outputs
             .push(Rc::new(self.sstable_writer.as_mut().unwrap().done()));
@@ -469,7 +476,7 @@ impl SSTable {
     }
 }
 
-fn sstable_file_name(file_num: FileNum) -> String {
+pub fn sstable_file_name(file_num: FileNum) -> String {
     format!("sstables/sstable_file_{}", file_num)
 }
 

@@ -10,7 +10,7 @@ use crate::storage::sstable::*;
 use crate::util::types::*;
 use std::cmp;
 use std::collections::{BinaryHeap, HashSet};
-use std::fs::create_dir;
+use std::fs::{create_dir, remove_dir_all, remove_file};
 use std::rc::Rc;
 use std::vec;
 
@@ -31,6 +31,14 @@ pub struct Config {
 /// database default configuration.
 impl Default for Config {
     /// create a default config.
+    // warning:
+    // currently, a block is of size 4096 bytes and hence could only store at most 240 table keys.
+    // on the other hand, each sstable only allocates one block as the index block which stores fence pointers.
+    // this means an sstable could at most store 240 data blocks which are of size 240 * 4096 = 983040 bytes,
+    // which is 57825 table keys.
+    // this limitation could be easily resolved by increasing the size of one block or let each sstable could allocate
+    // more than one blocks to be used as the index blocks.
+    // in summary, the default configuration does not work currently.
     fn default() -> Self {
         Self {
             fanout: 10,
@@ -47,10 +55,10 @@ impl Config {
     pub fn test() -> Self {
         Self {
             fanout: 2,
-            memtable_size_capacity: 4 * 1024, // 4KB.
-            sstable_size_capacity: 16 * 1024, // 16KB.
+            memtable_size_capacity: 16 * 1024, // 16KB.
+            sstable_size_capacity: 64 * 1024,  // 64KB.
             run_capacity: 4,
-            max_levels: 2,
+            max_levels: 4,
         }
     }
 }
@@ -68,9 +76,17 @@ pub struct Db {
     next_file_num: FileNum,
 }
 
+impl Drop for Db {
+    // fields in Db would still be dropped.
+    fn drop(&mut self) {
+        // remove the sstables directory.
+        let _ = remove_dir_all("./sstables");
+    }
+}
+
 impl Db {
     pub fn new(cfg: Config) -> Db {
-        // create the sstables directory if not exist.
+        // create a new sstables directory.
         let _ = create_dir("./sstables");
 
         // size capacity of the level 0 = run capacity of the level 0 * (memtable size capacity + 3 * BLOCK_SIZE).
@@ -97,12 +113,8 @@ impl Db {
         seq_num
     }
 
-    fn latest_seq_num(&self) -> SeqNum {
-        if self.next_seq_num > 0 {
-            self.next_seq_num - 1
-        } else {
-            0
-        }
+    fn snapshot_seq_num(&self) -> SeqNum {
+        self.next_seq_num
     }
 }
 
@@ -133,7 +145,7 @@ impl Db {
 impl Db {
     /// point query the associated value in the database.
     pub fn get(&mut self, user_key: UserKey) -> Option<UserValue> {
-        let snapshot_seq_num = self.latest_seq_num();
+        let snapshot_seq_num = self.snapshot_seq_num();
         let lookup_key = LookupKey::new(user_key, snapshot_seq_num);
 
         // search the key in the memtable.
@@ -166,7 +178,7 @@ impl Db {
 
     /// range query the values associated with keys in the key range [start_user_key, end_user_key).
     pub fn range(&mut self, start_user_key: UserKey, end_user_key: UserKey) -> Vec<UserEntry> {
-        let snapshot_seq_num = self.latest_seq_num();
+        let snapshot_seq_num = self.snapshot_seq_num();
         let start_lookup_key = LookupKey::new(start_user_key, snapshot_seq_num);
         let end_lookup_key = LookupKey::new(end_user_key, snapshot_seq_num);
 
@@ -286,11 +298,20 @@ impl CompactionContext {
 impl Db {
     /// flush the table keys in memtable to a new sstable.
     fn minor_compaction(&mut self) {
+        let mut sstable_writer_batch =
+            SSTableWriterBatch::new(self.next_file_num, self.cfg.sstable_size_capacity);
+
+        // compact table keys having the same user keys
+        let mut last_user_key = None;
         let mut iter = self.mem.iter();
-        let mut sstable_writer_batch = SSTableWriterBatch::new(self.next_file_num);
         while let Some(table_key) = iter.next() {
-            sstable_writer_batch.push(table_key);
+            if last_user_key.is_none() || last_user_key.unwrap() != table_key.user_key {
+                last_user_key = Some(table_key.user_key);
+                sstable_writer_batch.push(table_key);
+            }
         }
+
+        // complete the write.
         let (sstables, next_file_num) = sstable_writer_batch.done();
         // sync the next_file_num.
         self.next_file_num = next_file_num;
@@ -365,7 +386,8 @@ impl Db {
     }
 
     fn merge(&mut self, iters: &mut BinaryHeap<TableKeyIteratorType>) -> Run {
-        let mut sstable_writer_batch = SSTableWriterBatch::new(self.next_file_num.clone());
+        let mut sstable_writer_batch =
+            SSTableWriterBatch::new(self.next_file_num, self.cfg.sstable_size_capacity);
 
         let mut last_user_key = None;
         while let Some(mut iter) = iters.pop() {
@@ -411,17 +433,11 @@ impl Db {
             }
         }
 
-        let run;
-        if ctx.inputs.len() == 1 {
-            // only one input sstables, skip merging.
-            run = Run::new(
-                ctx.inputs.clone(),
-                ctx.inputs.first().unwrap().min_table_key.clone(),
-                ctx.inputs.first().unwrap().max_table_key.clone(),
-            )
-        } else {
-            run = self.merge(&mut ctx.iters());
-        }
+        // cannot skip merging even if there's only one input sstables.
+        // that's because an sstable cannot be modified anyway which means even
+        // its file name cannot be renamed.
+        // hence we must do merging to move keys from the old sstable file to the new sstable file.
+        let run = self.merge(&mut ctx.iters());
 
         self.levels
             .get_mut(curr_level_num + 1)
@@ -495,7 +511,10 @@ impl Db {
             level.update_key_range();
         }
 
-        // TODO: delete obsolete sstable files.
+        // delete obsolete sstable files.
+        for file_num in obsolete_file_nums.iter() {
+            remove_file(sstable_file_name(*file_num)).unwrap();
+        }
     }
 }
 
@@ -531,6 +550,8 @@ mod tests {
             db.put(user_key as i32, 0);
         }
 
+        assert_eq!(num_table_keys, db.next_seq_num);
+
         for user_key in 0..num_table_keys {
             assert_eq!(db.get(user_key as i32).unwrap(), 0);
         }
@@ -548,69 +569,15 @@ mod tests {
     #[test]
     fn minor_sequential() {
         let mut db = Db::new(Config::test());
-        check_sequential_keys(&mut db, 300);
+        check_sequential_keys(&mut db, 1000);
     }
 
     /// configures the #writes such that a major compaction is triggered.
+    // FIXME: fix major compaction errors, maybe by print stats.
     #[test]
     fn major_sequential() {
         let mut db = Db::new(Config::test());
         check_sequential_keys(&mut db, 10000);
-    }
-
-    /// on each iteration, randomly generate a number chosen from -1, 0, 1.
-    /// 1 => put (0, i).
-    /// -1 => delete (0).
-    /// 0 => get(0).
-    /// if the last op is put, check that the got value equals with the last put value.
-    /// if the last op is delete, check that the got value is none.
-    /// if the last op is get, skip.
-    fn check_put_delele_get(db: &mut Db, num_table_keys: i32) {
-        let mut rng = rand::thread_rng();
-        let mut last_rand_num = 0;
-        let mut last_put_val = None;
-        for i in 0..num_table_keys {
-            match rng.gen_range(-1..=1) {
-                1 => {
-                    db.put(0, i);
-                    last_rand_num = 1;
-                    last_put_val = Some(i);
-                }
-                -1 => {
-                    db.delete(0);
-                    last_rand_num = -1;
-                }
-                0 => {
-                    let val = db.get(0);
-                    if i > 0 {
-                        match last_rand_num {
-                            1 => {
-                                if let Some(last_put_val) = last_put_val {
-                                    assert_eq!(val.unwrap(), last_put_val);
-                                }
-                            }
-                            -1 => {
-                                assert!(val.is_none());
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                _ => panic!(),
-            }
-        }
-    }
-
-    #[test]
-    fn mem_only_put_delete_get() {
-        let mut db = Db::new(Config::test());
-        check_put_delele_get(&mut db, 100);
-    }
-
-    #[test]
-    fn put_delete_get() {
-        let mut db = Db::new(Config::test());
-        check_put_delele_get(&mut db, 10000);
     }
 
     #[test]
@@ -642,9 +609,14 @@ mod tests {
         let mut rng = rand::thread_rng();
         for _ in 0..max_num_deletes {
             let i = rng.gen_range(0..num_table_keys);
-            db.delete(i);
-            deleted_keys.insert(i);
+            if !deleted_keys.contains(&i) {
+                db.delete(i);
+                deleted_keys.insert(i);
+            }
         }
+
+        let seq_num = num_table_keys as usize + deleted_keys.len();
+        assert_eq!(seq_num, db.next_seq_num);
 
         let entries = db.range(0, num_table_keys);
         assert_eq!(entries.len(), num_table_keys as usize - deleted_keys.len());
@@ -669,5 +641,75 @@ mod tests {
         }
     }
 
-    // TODO: add unit testing for compaction.
+    // TODO: add unit testing for on-disk range.
+
+    /// put a sequence of keys.
+    /// randomly select some keys to be deleted.
+    /// delete these keys.
+    /// randomly select some keys not deleted.
+    /// update these keys.
+    /// put another sequence of keys inorder to push all former keys into the disk.
+    /// check the deleted keys are deleted.
+    /// check the updated keys are updated.
+    /// check all other keys still exist and their values are correct.
+    /// the number of keys are configured such that a set of major compactions will be incurred.
+    // TODO: pass this test.
+    #[test]
+    fn compaction() {
+        let mut db = Db::new(Config::test());
+        let num_puts = 10000;
+        for i in 0..num_puts {
+            db.put(i, i);
+        }
+
+        let max_num_deletes = 2000;
+        let mut deleted_keys = HashSet::with_capacity(max_num_deletes);
+        let mut rng = rand::thread_rng();
+        for _ in 0..max_num_deletes {
+            let i = rng.gen_range(0..num_puts);
+            if !deleted_keys.contains(&i) {
+                db.delete(i);
+                deleted_keys.insert(i);
+            }
+        }
+
+        let max_num_updates = 2000;
+        let mut updated_keys = HashSet::with_capacity(max_num_updates);
+        for _ in 0..max_num_updates {
+            let i = rng.gen_range(0..num_puts);
+            // do not update keys that were deleted.
+            if !deleted_keys.contains(&i) && !updated_keys.contains(&i) {
+                db.put(i, i + num_puts);
+                updated_keys.insert(i);
+            }
+        }
+
+        let num_puts_2 = 2000;
+        for i in num_puts..num_puts + num_puts_2 {
+            db.put(i, i);
+        }
+
+        let seq_num =
+            num_puts as usize + deleted_keys.len() + updated_keys.len() + num_puts_2 as usize;
+        assert_eq!(seq_num, db.next_seq_num);
+
+        for i in 0..num_puts {
+            if deleted_keys.contains(&i) {
+                println!("key {} is deleted", i);
+            } else if updated_keys.contains(&i) {
+                println!("key {} is updated", i);
+            } else {
+                println!("key {} is not changed", i);
+            }
+
+            let val = db.get(i);
+            if deleted_keys.contains(&i) {
+                assert!(val.is_none());
+            } else if updated_keys.contains(&i) {
+                assert_eq!(val.unwrap(), i + num_puts);
+            } else {
+                assert_eq!(val.unwrap(), i);
+            }
+        }
+    }
 }

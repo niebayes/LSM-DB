@@ -37,14 +37,24 @@ impl Level {
     }
 
     pub fn get(&self, lookup_key: &LookupKey) -> (Option<UserValue>, bool) {
+        // to handle the case that this level has no runs because of a major compaction,
+        // i.e. all runs are merged into a new run in the next level.
         if self.min_table_key.is_none() {
             return (None, false);
         }
 
-        if &lookup_key.as_table_key() >= self.min_table_key.as_ref().unwrap()
-            && &lookup_key.as_table_key() <= self.max_table_key.as_ref().unwrap()
+        // warning: cannot simply use <= or >= to compare the min/max table key,
+        // as the lookup key has the latest sequence number which must less than the
+        // table key with the same user key but having a smaller sequence number.
+        if lookup_key.user_key >= self.min_table_key.as_ref().unwrap().user_key
+            && lookup_key.user_key <= self.max_table_key.as_ref().unwrap().user_key
         {
             // collect table keys having the same user key as the lookup key.
+            // there might be multiple runs having table keys with the same user key as
+            // the lookup key.
+            // since table keys in different runs has no defined order, we have
+            // first collect those table keys having the same user key from all runs,
+            // and then apply a sorting to select the latest table key.
             let mut table_keys = Vec::new();
             for run in self.runs.iter() {
                 match run.get(lookup_key) {
@@ -187,9 +197,9 @@ impl Level {
         // it's possible that a level exceeds the size capacity and the run capacity at the same time.
         // in such a case, we prefer a vertical compaction.
         let level_size = self.runs.iter().fold(0, |total, run| total + run.size());
-        if level_size >= self.size_capacity {
+        if level_size > self.size_capacity {
             LevelState::ExceedSizeCapacity
-        } else if self.runs.len() >= self.run_capcity {
+        } else if self.runs.len() > self.run_capcity {
             LevelState::ExceedRunCapacity
         } else {
             LevelState::Normal

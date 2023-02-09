@@ -37,7 +37,8 @@ impl<'a> TableKeyIterator for MemTableIterator<'a> {
     }
 
     fn curr(&self) -> Option<TableKey> {
-        // FIXME: Is a clone of option also clones the wrapper value?
+        // Option<T>::clone will simply be derefed to the T::clone if there's some T.
+        // otherwise, None is returned.
         self.curr_table_key.clone()
     }
 
@@ -74,12 +75,13 @@ impl MemTable {
     pub fn get(&self, lookup_key: &LookupKey) -> (Option<UserValue>, bool) {
         let mut iter = self.iter();
         iter.seek(lookup_key);
-        if iter.valid() {
-            let table_key = iter.curr().unwrap();
-            match table_key.write_type {
-                WriteType::Put => return (Some(table_key.user_val), false),
-                WriteType::Delete => return (Some(table_key.user_val), true),
-                other => panic!("Unexpected write type {}", other as u8),
+        if let Some(table_key) = iter.curr() {
+            if table_key.user_key == lookup_key.user_key {
+                match table_key.write_type {
+                    WriteType::Put => return (Some(table_key.user_val), false),
+                    WriteType::Delete => return (Some(table_key.user_val), true),
+                    other => panic!("Unexpected write type {}", other as u8),
+                }
             }
         }
         (None, false)

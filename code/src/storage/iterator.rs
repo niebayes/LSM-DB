@@ -3,6 +3,9 @@ use std::cmp::Ordering;
 use super::keys::{LookupKey, TableKey};
 
 pub trait TableKeyIterator {
+    /// `seek` will move the cursor to point to the greater than or equal table key.
+    /// a greater table key could be a table key with a higher user key or with the identical
+    /// user key but having a higher sequence number.
     fn seek(&mut self, lookup_key: &LookupKey);
     fn next(&mut self) -> Option<TableKey>;
     fn curr(&self) -> Option<TableKey>;
