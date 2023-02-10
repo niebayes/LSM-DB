@@ -1,4 +1,4 @@
-use std::cmp::Ordering;
+use std::{cmp::Ordering, collections::BinaryHeap};
 
 use super::keys::{LookupKey, TableKey};
 
@@ -27,6 +27,8 @@ impl<'a> PartialEq for TableKeyIteratorType<'a> {
 impl<'a> Eq for TableKeyIteratorType<'a> {}
 
 impl<'a> PartialOrd for TableKeyIteratorType<'a> {
+    // binary heap in rust is a max-heap, and hence this method is defined such that greater values swim up.
+    // note that the returned order is the reversed table key order.
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         // FIXME: found the bugs: initially, all iterators point to None since the sstable iterator is not initialized.
         // might be solved by pre-init each iterator.

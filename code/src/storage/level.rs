@@ -81,7 +81,9 @@ impl Level {
     pub fn iter(&self) -> Result<LevelIterator, ()> {
         let mut run_iters = BinaryHeap::new();
         for run in self.runs.iter() {
-            run_iters.push(run.iter()?);
+            let mut iter = run.iter()?;
+            iter.next();
+            run_iters.push(iter);
         }
         Ok(LevelIterator {
             run_iters,
@@ -109,12 +111,14 @@ impl TableKeyIterator for LevelIterator {
 
     fn next(&mut self) -> Option<TableKey> {
         while let Some(mut run_iter) = self.run_iters.pop() {
-            if let Some(table_key) = run_iter.next() {
+            if let Some(table_key) = run_iter.curr() {
+                run_iter.next();
                 self.run_iters.push(run_iter);
                 self.curr_table_key = Some(table_key);
                 return self.curr_table_key.clone();
             }
         }
+        self.curr_table_key = None;
         None
     }
 

@@ -33,6 +33,7 @@ impl<'a> TableKeyIterator for MemTableIterator<'a> {
             self.curr_table_key = Some(table_key.clone());
             return self.curr_table_key.clone();
         }
+        self.curr_table_key = None;
         None
     }
 

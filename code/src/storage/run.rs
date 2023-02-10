@@ -154,6 +154,7 @@ impl TableKeyIterator for RunIterator {
                 self.curr_sstable_idx += 1;
             }
         }
+        self.curr_table_key = None;
         None
     }
 

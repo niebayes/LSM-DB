@@ -12,6 +12,7 @@ use std::cmp;
 use std::collections::{BinaryHeap, HashSet};
 use std::fs::{create_dir, remove_dir_all, remove_file};
 use std::rc::Rc;
+use std::time::SystemTime;
 use std::vec;
 
 /// database configurations.
@@ -184,9 +185,14 @@ impl Db {
 
         // iterator container to hold iterators from the memtable and all levels of sstables.
         let mut iters: BinaryHeap<TableKeyIteratorType> = BinaryHeap::new();
-        iters.push(Box::new(self.mem.iter()));
+        let mut mem_iter = Box::new(self.mem.iter());
+        mem_iter.next();
+        iters.push(mem_iter);
+
         for level in self.levels.iter() {
-            iters.push(Box::new(level.iter().unwrap()));
+            let mut level_iter = Box::new(level.iter().unwrap());
+            level_iter.next();
+            iters.push(level_iter);
         }
 
         let mut entries = Vec::new();
@@ -195,7 +201,7 @@ impl Db {
         // loop inv: there's at least one iterator in the heap.
         while let Some(mut iter) = iters.pop() {
             // proceed if the iterator is not exhausted.
-            if let Some(table_key) = iter.next() {
+            if let Some(table_key) = iter.curr() {
                 // early termination: the current key has a user key equal to or greater than the end user key.
                 if table_key.user_key >= end_user_key {
                     break;
@@ -222,6 +228,7 @@ impl Db {
                 }
 
                 // push back the iterator into the heap.
+                iter.next();
                 iters.push(iter);
             }
         }
@@ -292,7 +299,9 @@ impl CompactionContext {
     fn iters(&self) -> BinaryHeap<TableKeyIteratorType> {
         let mut iters: BinaryHeap<TableKeyIteratorType> = BinaryHeap::new();
         for input in self.inputs.iter() {
-            iters.push(Box::new(input.iter().unwrap()));
+            let mut iter = Box::new(input.iter().unwrap());
+            iter.next();
+            iters.push(iter);
         }
         iters
     }
@@ -428,17 +437,18 @@ impl Db {
 
         let mut last_user_key = None;
         while let Some(mut iter) = iters.pop() {
-            if let Some(table_key) = iter.next() {
+            if let Some(table_key) = iter.curr() {
                 num_input_keys += 1;
                 if last_user_key.is_none() || last_user_key.unwrap() != table_key.user_key {
                     last_user_key = Some(table_key.user_key);
-                    println!("push key {} to writer", table_key);
+                    // println!("push key {} to writer", table_key);
                     sstable_writer_batch.push(table_key);
                     num_output_keys += 1;
                 } else {
                     num_merged_keys += 1;
                 }
 
+                iter.next();
                 iters.push(iter);
             }
         }
@@ -583,7 +593,9 @@ impl Db {
         for sstable in old_run.sstables.iter() {
             // only sstables not involved in the compaction are merged with the new run.
             if !obsolete_file_nums.contains(&sstable.file_num) {
-                iters.push(Box::new(sstable.iter().unwrap()));
+                let mut sstable_iter = Box::new(sstable.iter().unwrap());
+                sstable_iter.next();
+                iters.push(sstable_iter);
             }
         }
 
@@ -594,7 +606,9 @@ impl Db {
             new_run.max_table_key.clone().unwrap(),
         );
 
-        iters.push(Box::new(new_run.iter().unwrap()));
+        let mut new_run_iter = Box::new(new_run.iter().unwrap());
+        new_run_iter.next();
+        iters.push(new_run_iter);
 
         let merged_run = self.merge(&mut iters);
         println!(
@@ -736,9 +750,18 @@ mod tests {
 
         // merge sstables a, b, c.
         let mut iters: BinaryHeap<TableKeyIteratorType> = BinaryHeap::new();
-        iters.push(Box::new(c.iter().unwrap()));
-        iters.push(Box::new(b.iter().unwrap()));
-        iters.push(Box::new(a.iter().unwrap()));
+
+        // init iterators.
+        let mut a_iter = Box::new(a.iter().unwrap());
+        a_iter.next();
+        let mut b_iter = Box::new(b.iter().unwrap());
+        b_iter.next();
+        let mut c_iter = Box::new(c.iter().unwrap());
+        c_iter.next();
+
+        iters.push(a_iter);
+        iters.push(b_iter);
+        iters.push(c_iter);
 
         println!("merging...");
         // assertion is done inside `merge`.
