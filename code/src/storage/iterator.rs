@@ -46,6 +46,7 @@ impl<'a> PartialOrd for TableKeyIteratorType<'a> {
 impl<'a> Ord for TableKeyIteratorType<'a> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         match (self.curr(), other.curr()) {
+            // FIXME: seems needs to be modified as what does on partial_cmp.
             (Some(head), Some(other_head)) => return head.cmp(&other_head),
             (Some(_), None) => return Ordering::Greater,
             (None, Some(_)) => return Ordering::Less,
