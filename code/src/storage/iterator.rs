@@ -28,8 +28,14 @@ impl<'a> Eq for TableKeyIteratorType<'a> {}
 
 impl<'a> PartialOrd for TableKeyIteratorType<'a> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        // FIXME: found the bugs: initially, all iterators point to None since the sstable iterator is not initialized.
+        // might be solved by pre-init each iterator.
         match (self.curr(), other.curr()) {
-            (Some(head), Some(other_head)) => return head.partial_cmp(&other_head),
+            (Some(head), Some(other_head)) => match head.partial_cmp(&other_head).unwrap() {
+                Ordering::Less => return Some(Ordering::Greater),
+                Ordering::Equal => return Some(Ordering::Equal),
+                Ordering::Greater => return Some(Ordering::Less),
+            },
             (Some(_), None) => return Some(Ordering::Greater),
             (None, Some(_)) => return Some(Ordering::Less),
             (None, None) => return Some(Ordering::Equal),

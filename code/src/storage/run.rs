@@ -178,7 +178,7 @@ impl PartialEq for RunIterator {
 
 impl Eq for RunIterator {}
 
-impl<'a> PartialOrd for RunIterator {
+impl PartialOrd for RunIterator {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         match (self.curr(), other.curr()) {
             (Some(head), Some(other_head)) => return head.partial_cmp(&other_head),
@@ -201,36 +201,40 @@ impl Ord for RunIterator {
 }
 
 pub struct RunStats {
+    indent: usize,
     sstable_stats: Vec<SSTableStats>,
     min_table_key: TableKey,
     max_table_key: TableKey,
+}
+
+impl Run {
+    pub fn stats(&self, indent: usize) -> RunStats {
+        let mut sstable_stats = Vec::new();
+        for sstable in self.sstables.iter() {
+            sstable_stats.push(sstable.stats(indent + 1));
+        }
+        RunStats {
+            indent,
+            sstable_stats,
+            min_table_key: self.min_table_key.as_ref().unwrap().clone(),
+            max_table_key: self.max_table_key.as_ref().unwrap().clone(),
+        }
+    }
 }
 
 impl Display for RunStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut stats = String::new();
 
-        stats += &format!("min table key: {}\n", self.min_table_key);
-        stats += &format!("max table key: {}\n", self.max_table_key);
+        stats += "  ".repeat(self.indent).as_str();
+        stats += &format!("Min = {}    ", self.min_table_key);
+        stats += &format!("Max = {}\n", self.max_table_key);
 
         for sstable_stats in self.sstable_stats.iter() {
-            stats += &format!("file num: {}\n\t{}", sstable_stats.file_num, sstable_stats);
+            stats += "  ".repeat(self.indent).as_str();
+            stats += &format!("sstable {}\n{}", sstable_stats.file_num, sstable_stats);
         }
 
         write!(f, "{}", stats)
-    }
-}
-
-impl Run {
-    pub fn stats(&self) -> RunStats {
-        let mut sstable_stats = Vec::new();
-        for sstable in self.sstables.iter() {
-            sstable_stats.push(sstable.stats());
-        }
-        RunStats {
-            sstable_stats,
-            min_table_key: self.min_table_key.as_ref().unwrap().clone(),
-            max_table_key: self.max_table_key.as_ref().unwrap().clone(),
-        }
     }
 }

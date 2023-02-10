@@ -2,7 +2,7 @@ use rand::Rng;
 
 use crate::storage::block::BLOCK_SIZE;
 use crate::storage::iterator::*;
-use crate::storage::keys::{LookupKey, TableKey};
+use crate::storage::keys::{LookupKey, TableKey, TABLE_KEY_SIZE};
 use crate::storage::level::{Level, LevelState};
 use crate::storage::memtable::MemTable;
 use crate::storage::run::Run;
@@ -133,7 +133,7 @@ impl Db {
 
         self.mem.put(table_key);
 
-        if self.mem.size() >= self.cfg.memtable_size_capacity {
+        if self.mem.size() > self.cfg.memtable_size_capacity - TABLE_KEY_SIZE {
             self.minor_compaction();
             self.check_level_state();
             self.mem = MemTable::new();
@@ -253,16 +253,20 @@ impl CompactionContext {
         self.inputs.first().unwrap()
     }
 
-    /// return true if the key range of the given sstable overlaps with the key range of the base sstable.
-    fn overlap_with_base(&self, other: &SSTable) -> bool {
-        let base = self.get_base();
-        let (min, max) = (base.min_table_key.user_key, base.max_table_key.user_key);
+    fn overlap(me: &SSTable, other: &SSTable) -> bool {
+        let (min, max) = (me.min_table_key.user_key, me.max_table_key.user_key);
         let (other_min, other_max) = (other.min_table_key.user_key, other.max_table_key.user_key);
 
         (min >= other_min && min <= other_max)
             || (max >= other_min && max <= other_max)
             || (min >= other_min && max <= other_max)
             || (other_min >= min && other_max <= max)
+    }
+
+    /// return true if the key range of the given sstable overlaps with the key range of the base sstable.
+    fn overlap_with_base(&self, other: &SSTable) -> bool {
+        let base = self.get_base();
+        CompactionContext::overlap(base, other)
     }
 
     /// return true if the key range of the given sstable overlaps with the key range of the current the level.
@@ -301,6 +305,8 @@ impl Db {
         let mut sstable_writer_batch =
             SSTableWriterBatch::new(self.next_file_num, self.cfg.sstable_size_capacity);
 
+        println!("minor compacting...");
+
         // compact table keys having the same user keys
         let mut last_user_key = None;
         let mut iter = self.mem.iter();
@@ -333,7 +339,9 @@ impl Db {
                 if let LevelState::ExceedSizeCapacity | LevelState::ExceedRunCapacity =
                     level.state()
                 {
+                    print!("\nBefore compaction:\n{}\n", self.stats());
                     self.major_compaction(level_num);
+                    print!("\nAfter compaction:\n{}\n", self.stats());
                     // do not increment the level number since a level may exceed
                     // the size capacity and the run capacity at the same time.
                 } else {
@@ -353,16 +361,30 @@ impl Db {
         let sstable_idx = rand::thread_rng().gen_range(0..run.sstables.len());
         let sstable = run.sstables.get(sstable_idx).unwrap();
 
+        println!(
+            "select sstable {} at run {} as the base",
+            sstable.file_num, run_idx
+        );
+
         sstable.clone()
     }
 
     fn major_compaction(&mut self, level_num: LevelNum) {
         // select the base sstable in the current level.
         let base = self.select_compaction_base(level_num);
+        println!("major compacting level {}", level_num);
+        println!(
+            "base = sstable {},  Min = {}  Max = {}",
+            base.file_num,
+            base.min_table_key.clone(),
+            base.max_table_key.clone()
+        );
+
         let curr_level = self.levels.get_mut(level_num).unwrap();
         let mut ctx = CompactionContext::new(base);
 
         // collect overlapping sstables in the current level.
+        println!("collecting sstables at level {}", level_num);
         for run in curr_level.runs.iter() {
             for sstable in run.sstables.iter() {
                 // skip the base sstable itself.
@@ -372,9 +394,20 @@ impl Db {
 
                 if ctx.overlap_with_base(sstable) {
                     ctx.add_input(sstable.clone(), true);
+                    println!(
+                        "collect sstable {}, Min = {}  Max = {}",
+                        sstable.file_num,
+                        sstable.min_table_key.clone(),
+                        sstable.max_table_key.clone()
+                    );
                 }
             }
         }
+
+        println!(
+            "current level key range: Min = {}  Max = {}",
+            ctx.min_user_key, ctx.max_user_key
+        );
 
         if let LevelState::ExceedRunCapacity = curr_level.state() {
             self.horizontal_compaction(&mut ctx, level_num);
@@ -389,12 +422,21 @@ impl Db {
         let mut sstable_writer_batch =
             SSTableWriterBatch::new(self.next_file_num, self.cfg.sstable_size_capacity);
 
+        let mut num_input_keys = 0;
+        let mut num_merged_keys = 0;
+        let mut num_output_keys = 0;
+
         let mut last_user_key = None;
         while let Some(mut iter) = iters.pop() {
             if let Some(table_key) = iter.next() {
+                num_input_keys += 1;
                 if last_user_key.is_none() || last_user_key.unwrap() != table_key.user_key {
                     last_user_key = Some(table_key.user_key);
+                    println!("push key {} to writer", table_key);
                     sstable_writer_batch.push(table_key);
+                    num_output_keys += 1;
+                } else {
+                    num_merged_keys += 1;
                 }
 
                 iters.push(iter);
@@ -403,6 +445,35 @@ impl Db {
 
         let (sstables, next_file_num) = sstable_writer_batch.done();
         self.next_file_num = next_file_num;
+
+        assert_eq!(num_input_keys, num_merged_keys + num_output_keys);
+        println!(
+            "num_input_keys = {}  num_merged_keys = {}  num_output_keys = {}",
+            num_input_keys, num_merged_keys, num_output_keys
+        );
+
+        println!("output sstables:");
+        for sstable in sstables.iter() {
+            println!(
+                "output sstable {}, Min = {}  Max = {}",
+                sstable.file_num,
+                sstable.min_table_key.clone(),
+                sstable.max_table_key.clone()
+            );
+        }
+
+        // assert all sstables in this run has no overlapping keys.
+        for i in 0..sstables.len() {
+            for j in 0..sstables.len() {
+                if i == j {
+                    continue;
+                }
+                assert!(!CompactionContext::overlap(
+                    sstables.get(i).unwrap(),
+                    sstables.get(j).unwrap()
+                ));
+            }
+        }
 
         Run::new(
             sstables,
@@ -425,10 +496,17 @@ impl Db {
         let next_level = self.levels.get(curr_level_num + 1).unwrap();
 
         // collect overlapping sstables in the next level.
+        println!("collecting sstables at level {}", next_level.level_num);
         for run in next_level.runs.iter() {
             for sstable in run.sstables.iter() {
                 if ctx.overlap_with_curr_level(sstable) {
-                    ctx.add_input(sstable.clone(), false)
+                    ctx.add_input(sstable.clone(), false);
+                    println!(
+                        "collect sstable {}, Min = {}  Max = {}",
+                        sstable.file_num,
+                        sstable.min_table_key.clone(),
+                        sstable.max_table_key.clone()
+                    );
                 }
             }
         }
@@ -445,10 +523,49 @@ impl Db {
             .add_run(run);
     }
 
-    fn select_compaction_run(&mut self, curr_level_num: LevelNum) -> Run {
+    fn select_compaction_run(&mut self, curr_level_num: LevelNum, base_file_num: FileNum) -> Run {
         // randomly select a run in the current level.
+        // this run cannot be the run containing the base sstable.
         let curr_level = self.levels.get_mut(curr_level_num).unwrap();
-        let run_idx = rand::thread_rng().gen_range(0..curr_level.runs.len());
+        assert!(curr_level.runs.len() > 1);
+
+        let mut run_idx;
+        loop {
+            run_idx = rand::thread_rng().gen_range(0..curr_level.runs.len());
+            let run = curr_level.runs.get(run_idx).unwrap();
+
+            let mut ok = true;
+            for sstable in run.sstables.iter() {
+                if sstable.file_num == base_file_num {
+                    ok = false;
+                    break;
+                }
+            }
+            if ok {
+                break;
+            }
+        }
+
+        println!(
+            "select run {} as the compaction run. Min = {}  Max = {}",
+            run_idx,
+            curr_level
+                .runs
+                .get(run_idx)
+                .unwrap()
+                .min_table_key
+                .as_ref()
+                .unwrap(),
+            curr_level
+                .runs
+                .get(run_idx)
+                .unwrap()
+                .max_table_key
+                .as_ref()
+                .unwrap(),
+        );
+
+        // the key range is lazily updated.
         curr_level.runs.remove(run_idx)
     }
 
@@ -462,7 +579,7 @@ impl Db {
             obsolete_file_nums.insert(sstable.file_num);
         }
 
-        let old_run = self.select_compaction_run(curr_level_num);
+        let old_run = self.select_compaction_run(curr_level_num, ctx.get_base().file_num);
         for sstable in old_run.sstables.iter() {
             // only sstables not involved in the compaction are merged with the new run.
             if !obsolete_file_nums.contains(&sstable.file_num) {
@@ -471,9 +588,20 @@ impl Db {
         }
 
         let new_run = self.merge(&mut ctx.iters());
+        println!(
+            "merged the inputs into a new run. Min = {}  Max = {}",
+            new_run.min_table_key.clone().unwrap(),
+            new_run.max_table_key.clone().unwrap(),
+        );
+
         iters.push(Box::new(new_run.iter().unwrap()));
 
         let merged_run = self.merge(&mut iters);
+        println!(
+            "merged the new run and the old run into a merged run. Min = {}  Max = {}",
+            merged_run.min_table_key.clone().unwrap(),
+            merged_run.max_table_key.clone().unwrap(),
+        );
 
         // add the merged run into the current level.
         self.levels
@@ -521,18 +649,9 @@ impl Db {
 impl Db {
     pub fn stats(&self) -> String {
         let mut stats = String::new();
-
-        stats += &format!("next sequence number: {}\n", self.next_seq_num);
-        stats += &format!("next file number: {}\n", self.next_file_num);
-
-        stats += &format!("memtable {}\n", self.mem.stats());
-
         for level in self.levels.iter() {
-            if !level.runs.is_empty() {
-                stats += &format!("level {}\n\t{}", level.level_num, level.stats())
-            }
+            stats += &format!("level {}\n{}", level.level_num, level.stats(1))
         }
-
         stats
     }
 }
@@ -570,6 +689,60 @@ mod tests {
     fn minor_sequential() {
         let mut db = Db::new(Config::test());
         check_sequential_keys(&mut db, 1000);
+    }
+
+    // FIXME: fix bug in merging with binary heap.
+    #[test]
+    fn merge() {
+        let mut db = Db::new(Config::test());
+
+        // write [0, 962], [5778, 6740] to an sstable.
+        let mut sstable_writer_batch =
+            SSTableWriterBatch::new(db.next_file_num, db.cfg.sstable_size_capacity);
+        let num_table_keys = 963;
+        for i in 0..num_table_keys {
+            let table_key = TableKey::identity(i);
+            sstable_writer_batch.push(table_key)
+        }
+        for i in 0..num_table_keys {
+            let table_key = TableKey::identity(i + 5778);
+            sstable_writer_batch.push(table_key)
+        }
+        let (sstables, next_file_num) = sstable_writer_batch.done();
+        db.next_file_num = next_file_num;
+        let a = sstables.first().unwrap();
+
+        // write [963, 1925] to an sstable.
+        sstable_writer_batch =
+            SSTableWriterBatch::new(db.next_file_num, db.cfg.sstable_size_capacity);
+        for i in 0..num_table_keys {
+            let table_key = TableKey::identity(i + 963);
+            sstable_writer_batch.push(table_key)
+        }
+        let (sstables, next_file_num) = sstable_writer_batch.done();
+        db.next_file_num = next_file_num;
+        let b = sstables.first().unwrap();
+
+        // write [2889, 4814] to an sstable.
+        sstable_writer_batch =
+            SSTableWriterBatch::new(db.next_file_num, db.cfg.sstable_size_capacity);
+        for i in 0..num_table_keys * 2 {
+            let table_key = TableKey::identity(i + 2889);
+            sstable_writer_batch.push(table_key)
+        }
+        let (sstables, next_file_num) = sstable_writer_batch.done();
+        db.next_file_num = next_file_num;
+        let c = sstables.first().unwrap();
+
+        // merge sstables a, b, c.
+        let mut iters: BinaryHeap<TableKeyIteratorType> = BinaryHeap::new();
+        iters.push(Box::new(c.iter().unwrap()));
+        iters.push(Box::new(b.iter().unwrap()));
+        iters.push(Box::new(a.iter().unwrap()));
+
+        println!("merging...");
+        // assertion is done inside `merge`.
+        db.merge(&mut iters);
     }
 
     /// configures the #writes such that a major compaction is triggered.

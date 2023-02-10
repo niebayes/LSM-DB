@@ -4,7 +4,7 @@ use super::keys::*;
 use crate::util::types::*;
 use std::cmp;
 use std::fmt::Display;
-use std::fs::File;
+use std::fs::{create_dir, remove_dir_all, File};
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::panic;
 use std::rc::Rc;
@@ -96,8 +96,7 @@ impl TableKeyIterator for SSTableIterator {
         // reach here if either the data block iter is some but exhausted,
         // or the data block iter is none which could only happen on the init.
 
-        self.reader.next();
-        if self.reader.done() {
+        if !self.reader.next() {
             // all data blocks are read over.
             return None;
         }
@@ -187,9 +186,9 @@ impl SSTableReader {
 
     /// advance to the next data block if any.
     /// return true if the advancing is successful.
-    fn next(&mut self) {
-        if self.done() {
-            return;
+    fn next(&mut self) -> bool {
+        if self.next_data_block_idx >= self.num_data_blocks {
+            return false;
         }
 
         // read the next data block into the buffer.
@@ -211,6 +210,8 @@ impl SSTableReader {
         self.data_block = Some(data_block);
 
         self.next_data_block_idx += 1;
+
+        true
     }
 
     /// advance the cursor to the start of the data block with index data_block_idx.
@@ -218,10 +219,6 @@ impl SSTableReader {
         while self.next_data_block_idx < data_block_idx {
             self.next();
         }
-    }
-
-    fn done(&self) -> bool {
-        self.next_data_block_idx >= self.num_data_blocks
     }
 }
 
@@ -285,6 +282,11 @@ impl SSTableWriter {
     }
 
     fn flush_data_block(&mut self) {
+        // println!(
+        //     "flush data block containing {} keys",
+        //     self.data_block.as_ref().unwrap().table_keys.len()
+        // );
+
         self.writer
             .write(&self.data_block.as_ref().unwrap().encode_to_bytes())
             .unwrap();
@@ -325,6 +327,14 @@ impl SSTableWriter {
         self.writer.write(&footer.encode_to_bytes()).unwrap();
         self.writer.flush().unwrap();
 
+        println!(
+            "writer writes {} keys to sstable {}, Min = {}  Max = {}",
+            self.num_table_keys,
+            self.file_num,
+            self.min_table_key.as_ref().unwrap().clone(),
+            self.max_table_key.as_ref().unwrap().clone(),
+        );
+
         // create an in-memory sstable filemeta.
         SSTable::new(
             self.file_num,
@@ -335,8 +345,7 @@ impl SSTableWriter {
     }
 
     pub fn file_size(&self) -> usize {
-        // file_size = #blocks * block size = (#data blocks + #filter block + #index block + #footer) * block size.
-        let num_data_blocks = ((self.num_table_keys * TABLE_KEY_SIZE) + BLOCK_SIZE) / BLOCK_SIZE;
+        let num_data_blocks = table_keys_to_blocks(self.num_table_keys);
         (num_data_blocks + 3) * BLOCK_SIZE
     }
 }
@@ -420,6 +429,7 @@ impl SSTableWriterBatch {
 }
 
 pub struct SSTableStats {
+    indent: usize,
     pub file_num: FileNum,
     all_table_keys: Vec<String>,
     visible_table_keys: Vec<String>,
@@ -431,28 +441,29 @@ impl Display for SSTableStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut stats = String::new();
 
-        stats += &format!("min table key: {}\n", self.min_table_key);
-        stats += &format!("max table key: {}\n", self.max_table_key);
+        stats += "  ".repeat(self.indent).as_str();
+        stats += &format!("Min = {}    ", self.min_table_key);
+        stats += &format!("Max = {}\n", self.max_table_key);
 
-        stats += &format!("all table keys:\n\tcount: {}", self.all_table_keys.len());
-        for table_key in self.all_table_keys.iter() {
-            stats += &format!("\n\t{}", table_key);
-        }
+        // stats += &format!("all table keys:\n\tcount: {}", self.all_table_keys.len());
+        // for table_key in self.all_table_keys.iter() {
+        //     stats += &format!("\n\t{}", table_key);
+        // }
 
-        stats += &format!(
-            "\nvisible table keys:\n\tcount: {}",
-            self.visible_table_keys.len()
-        );
-        for table_key in self.visible_table_keys.iter() {
-            stats += &format!("\n\t{}", table_key);
-        }
+        // stats += &format!(
+        //     "\nvisible table keys:\n\tcount: {}",
+        //     self.visible_table_keys.len()
+        // );
+        // for table_key in self.visible_table_keys.iter() {
+        //     stats += &format!("\n\t{}", table_key);
+        // }
 
         write!(f, "{}", stats)
     }
 }
 
 impl SSTable {
-    pub fn stats(&self) -> SSTableStats {
+    pub fn stats(&self, indent: usize) -> SSTableStats {
         let mut all_table_keys = Vec::new();
         let mut visible_table_keys = Vec::new();
 
@@ -467,6 +478,7 @@ impl SSTable {
         }
 
         SSTableStats {
+            indent,
             file_num: self.file_num,
             all_table_keys,
             visible_table_keys,
@@ -490,15 +502,17 @@ mod tests {
 
     #[test]
     fn writer_reader() {
+        let _ = create_dir("./sstables");
         let file_num = 42;
         let mut writer = SSTableWriter::new(file_num);
 
-        let num_table_keys = 200;
+        let num_table_keys = 963;
         for i in 0..num_table_keys {
             let table_key = TableKey::new(i, i as usize, WriteType::Put, i);
             writer.push(table_key);
         }
-        writer.done();
+        let sstable = writer.done();
+        assert_eq!(sstable.file_size, 8 * BLOCK_SIZE);
 
         let reader = SSTableReader::new(file_num);
 
@@ -522,5 +536,30 @@ mod tests {
                 assert_eq!(writer_bytes[i], reader_bytes[i]);
             }
         }
+        let _ = remove_dir_all("./sstables");
+    }
+
+    #[test]
+    fn sstable_iterator() {
+        let _ = create_dir("./sstables");
+        let file_num = 42;
+        let mut writer = SSTableWriter::new(file_num);
+
+        let num_table_keys = 963;
+        for i in 0..num_table_keys {
+            let table_key = TableKey::new(i, i as usize, WriteType::Put, i);
+            writer.push(table_key);
+        }
+        let sstable = writer.done();
+        assert_eq!(sstable.file_size, 8 * BLOCK_SIZE);
+
+        let mut iter = sstable.iter().unwrap();
+        let mut i = 0;
+        while let Some(table_key) = iter.next() {
+            assert_eq!(table_key, TableKey::new(i, i as usize, WriteType::Put, i));
+            i += 1;
+        }
+        assert_eq!(i, num_table_keys);
+        let _ = remove_dir_all("./sstables");
     }
 }

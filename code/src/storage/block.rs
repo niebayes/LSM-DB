@@ -16,12 +16,12 @@ fn maybe_pad(bytes: &mut Vec<u8>) {
 }
 
 pub fn table_keys_to_blocks(num_table_keys: usize) -> usize {
-    let num_data_blocks = ((num_table_keys * TABLE_KEY_SIZE) + BLOCK_SIZE) / BLOCK_SIZE;
+    let num_data_blocks = (num_table_keys + KEYS_PER_BLOCK) / KEYS_PER_BLOCK;
     num_data_blocks
 }
 
 pub struct DataBlock {
-    table_keys: Vec<TableKey>,
+    pub table_keys: Vec<TableKey>,
     max_table_key: Option<TableKey>,
 }
 

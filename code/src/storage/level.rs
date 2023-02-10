@@ -198,8 +198,10 @@ impl Level {
         // in such a case, we prefer a vertical compaction.
         let level_size = self.runs.iter().fold(0, |total, run| total + run.size());
         if level_size > self.size_capacity {
+            println!("level {} exceeds size capacity", self.level_num);
             LevelState::ExceedSizeCapacity
         } else if self.runs.len() > self.run_capcity {
+            println!("level {} exceeds run capacity", self.level_num);
             LevelState::ExceedRunCapacity
         } else {
             LevelState::Normal
@@ -208,16 +210,17 @@ impl Level {
 }
 
 pub struct LevelStats {
+    indent: usize,
     run_stats: Vec<RunStats>,
     min_table_key: Option<TableKey>,
     max_table_key: Option<TableKey>,
 }
 
 impl Level {
-    pub fn stats(&self) -> LevelStats {
+    pub fn stats(&self, indent: usize) -> LevelStats {
         let mut run_stats = Vec::with_capacity(self.runs.len());
         for run in self.runs.iter() {
-            run_stats.push(run.stats());
+            run_stats.push(run.stats(indent + 1));
         }
 
         let mut min_table_key = None;
@@ -231,6 +234,7 @@ impl Level {
         }
 
         LevelStats {
+            indent,
             run_stats,
             min_table_key,
             max_table_key,
@@ -242,20 +246,22 @@ impl Display for LevelStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut stats = String::new();
 
+        stats += "  ".repeat(self.indent).as_str();
         if let Some(table_key) = self.min_table_key.as_ref() {
-            stats += &format!("min table key: {}\n", table_key);
+            stats += &format!("Min = {}    ", table_key);
         } else {
-            stats += &format!("min table key: {}\n", "NaN");
+            stats += &format!("Min = {}    ", "NaN");
         }
 
         if let Some(table_key) = self.max_table_key.as_ref() {
-            stats += &format!("max table key: {}\n", table_key);
+            stats += &format!("Max = {}\n", table_key);
         } else {
-            stats += &format!("max table key: {}\n", "NaN");
+            stats += &format!("Max = {}\n", "NaN");
         }
 
         for (i, run_stats) in self.run_stats.iter().enumerate() {
-            stats += &format!("run index: {}\n\t{}", i, run_stats);
+            stats += "  ".repeat(self.indent).as_str();
+            stats += &format!("run {}\n{}", i, run_stats);
         }
 
         write!(f, "{}", stats)

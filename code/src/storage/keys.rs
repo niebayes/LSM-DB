@@ -140,21 +140,13 @@ impl Ord for TableKey {
 
 impl Display for TableKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "[{} | {} | {} | {}]",
-            self.user_key, self.seq_num, self.write_type, self.user_val
-        )
+        write!(f, "[{} | {}]", self.user_key, self.seq_num)
     }
 }
 
 impl Debug for TableKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "[{} | {} | {} | {}]",
-            self.user_key, self.seq_num, self.write_type, self.user_val
-        )
+        write!(f, "[{} | {}]", self.user_key, self.seq_num)
     }
 }
 
