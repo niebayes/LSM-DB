@@ -12,7 +12,6 @@ use std::cmp;
 use std::collections::{BinaryHeap, HashSet};
 use std::fs::{create_dir, remove_dir_all, remove_file};
 use std::rc::Rc;
-use std::time::SystemTime;
 use std::vec;
 
 /// database configurations.
@@ -705,7 +704,6 @@ mod tests {
         check_sequential_keys(&mut db, 1000);
     }
 
-    // FIXME: fix bug in merging with binary heap.
     #[test]
     fn merge() {
         let mut db = Db::new(Config::test());
@@ -769,7 +767,6 @@ mod tests {
     }
 
     /// configures the #writes such that a major compaction is triggered.
-    // FIXME: fix major compaction errors, maybe by print stats.
     #[test]
     fn major_sequential() {
         let mut db = Db::new(Config::test());
@@ -849,7 +846,6 @@ mod tests {
     /// check the updated keys are updated.
     /// check all other keys still exist and their values are correct.
     /// the number of keys are configured such that a set of major compactions will be incurred.
-    // TODO: pass this test.
     #[test]
     fn compaction() {
         let mut db = Db::new(Config::test());
@@ -891,6 +887,7 @@ mod tests {
 
         for i in 0..num_puts {
             if deleted_keys.contains(&i) {
+                // TODO: wrap all debug println to debug_print.
                 println!("key {} is deleted", i);
             } else if updated_keys.contains(&i) {
                 println!("key {} is updated", i);

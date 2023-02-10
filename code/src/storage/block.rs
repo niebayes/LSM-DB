@@ -16,7 +16,7 @@ fn maybe_pad(bytes: &mut Vec<u8>) {
 }
 
 pub fn table_keys_to_blocks(num_table_keys: usize) -> usize {
-    let num_data_blocks = (num_table_keys + KEYS_PER_BLOCK) / KEYS_PER_BLOCK;
+    let num_data_blocks = (num_table_keys + KEYS_PER_BLOCK - 1) / KEYS_PER_BLOCK;
     num_data_blocks
 }
 
