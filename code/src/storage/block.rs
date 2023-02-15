@@ -1,7 +1,8 @@
+use crate::util::types::UserKey;
+
 use super::bloom_filter::BloomFilter;
 use super::iterator::TableKeyIterator;
 use super::keys::{LookupKey, TableKey, TABLE_KEY_SIZE};
-use crate::util::types::*;
 use integer_encoding::*;
 use std::mem;
 use std::{cmp, io};
@@ -127,12 +128,12 @@ impl FilterBlock {
         }
     }
 
-    pub fn insert(&mut self, table_key: &TableKey) {
-        self.bloom_filter.insert(table_key);
+    pub fn insert(&mut self, user_key: UserKey) {
+        self.bloom_filter.insert(user_key);
     }
 
-    pub fn maybe_contain(&self, lookup_key: &LookupKey) -> bool {
-        self.bloom_filter.maybe_contain(lookup_key)
+    pub fn maybe_contain(&self, user_key: UserKey) -> bool {
+        self.bloom_filter.maybe_contain(user_key)
     }
 
     pub fn encode_to_bytes(&self) -> Vec<u8> {
@@ -282,6 +283,7 @@ impl Footer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::util::types::*;
 
     #[test]
     fn data_block_encode_decode() {
@@ -315,7 +317,7 @@ mod tests {
         let num_table_keys = 500;
         for i in 0..num_table_keys {
             let table_key = TableKey::identity(i);
-            filter_block.insert(&table_key);
+            filter_block.insert(table_key.user_key);
         }
 
         let bytes1 = filter_block.encode_to_bytes();

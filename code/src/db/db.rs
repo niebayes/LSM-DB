@@ -846,6 +846,7 @@ mod tests {
     /// check the updated keys are updated.
     /// check all other keys still exist and their values are correct.
     /// the number of keys are configured such that a set of major compactions will be incurred.
+    // FIXME: seems there're still bugs in the implementation
     #[test]
     fn compaction() {
         let mut db = Db::new(Config::test());

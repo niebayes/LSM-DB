@@ -1,4 +1,4 @@
-use crate::db::db::{Config, Db};
+use crate::db::db::Db;
 use crate::server::cmd::{print_help, Command};
 use crate::util::types::{UserEntry, UserKey, UserValue};
 use rustyline::error::ReadlineError;
@@ -153,6 +153,7 @@ impl Server {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::db::Config;
 
     // TODO: document each unit tests. Rename them properly.
     #[test]
@@ -163,7 +164,6 @@ mod tests {
         for i in 0..num_table_keys {
             let put = Command::Put(i, i);
             server.handle_cmd(put);
-            // TODO: add indent level param to each stats method.
             server.handle_cmd(Command::PrintStats);
         }
 

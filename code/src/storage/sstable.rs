@@ -4,7 +4,7 @@ use super::keys::*;
 use crate::util::types::*;
 use std::cmp;
 use std::fmt::Display;
-use std::fs::{create_dir, remove_dir_all, File};
+use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::panic;
 use std::rc::Rc;
@@ -72,10 +72,9 @@ pub struct SSTableIterator {
 impl TableKeyIterator for SSTableIterator {
     fn seek(&mut self, lookup_key: &LookupKey) {
         // if the key definitely not in the sstable, terminates searching.
-        // FIXME: correct the bloom filter implementation.
-        // if !self.reader.filter_block.maybe_contain(lookup_key) {
-        //     return;
-        // }
+        if !self.reader.filter_block.maybe_contain(lookup_key.user_key) {
+            return;
+        }
 
         // binary search the lookup key by fence pointers.
         if let Some(data_block_idx) = self.reader.index_block.binary_search(lookup_key) {
@@ -268,7 +267,7 @@ impl SSTableWriter {
             ));
         }
 
-        self.filter_block.insert(&table_key);
+        self.filter_block.insert(table_key.user_key);
         if self.data_block.is_none() {
             self.data_block = Some(DataBlock::new());
         }
@@ -431,7 +430,9 @@ impl SSTableWriterBatch {
 pub struct SSTableStats {
     indent: usize,
     pub file_num: FileNum,
+    #[allow(dead_code)]
     all_table_keys: Vec<String>,
+    #[allow(dead_code)]
     visible_table_keys: Vec<String>,
     min_table_key: TableKey,
     max_table_key: TableKey,
@@ -499,6 +500,7 @@ fn make_block_buf() -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::{create_dir, remove_dir_all};
 
     #[test]
     fn writer_reader() {

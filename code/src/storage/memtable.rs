@@ -1,7 +1,6 @@
 use super::iterator::TableKeyIterator;
 use super::keys::*;
 use crate::util::types::*;
-use rand::Rng;
 use std::collections::BTreeSet;
 use std::fmt::Display;
 
@@ -93,6 +92,7 @@ impl MemTable {
         self.set.len() * TABLE_KEY_SIZE
     }
 
+    #[allow(dead_code)]
     pub fn stats(&self) -> MemTableStats {
         let mut all_table_keys = Vec::new();
         let mut visible_table_keys = Vec::new();
@@ -145,6 +145,7 @@ impl Display for MemTableStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::Rng;
 
     #[test]
     /// on each iteration, randomly generate a number chosen from -1, 0, 1.
