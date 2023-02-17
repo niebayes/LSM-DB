@@ -126,6 +126,8 @@ mod tests {
     /// randomly generate a set of keys to be inserted into the bloom filter.
     /// compute the variance of the bits in the bit vector.
     /// check the variance is smaller than a specified tolerance.
+    // FIXME: unable to pass this test reliably. This mighe because there're some potential flaws in
+    // the implementation or the num_keys is not big enough to alleviate the randomness.
     #[test]
     fn hash_randomness() {
         let mut filter = BloomFilter::new();

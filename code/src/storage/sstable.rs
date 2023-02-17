@@ -1,6 +1,7 @@
 use super::block::*;
 use super::iterator::TableKeyIterator;
 use super::keys::*;
+use crate::logging::manifest::SSTableManifest;
 use crate::util::types::*;
 use std::cmp;
 use std::fmt::Display;
@@ -9,11 +10,20 @@ use std::io::{BufReader, BufWriter, Read, Write};
 use std::panic;
 use std::rc::Rc;
 
+pub fn sstable_file_name(file_num: FileNum) -> String {
+    format!("sstables/sstable_file_{}", file_num)
+}
+
+fn make_block_buf() -> Vec<u8> {
+    vec![0; BLOCK_SIZE]
+}
+
 /// in-memory sstable metadata.
 pub struct SSTable {
     /// sstable file number from which the corresponding sstable file could be located.
     pub file_num: FileNum,
     /// sstable file size.
+    // used to calculate the total size of a run.
     pub file_size: usize,
     /// min table key stored in the sstable.
     pub min_table_key: TableKey,
@@ -222,7 +232,7 @@ impl SSTableReader {
 }
 
 /// a writer for writing table keys into a sstable file.
-struct SSTableWriter {
+pub struct SSTableWriter {
     file_num: FileNum,
     writer: BufWriter<File>,
     data_block: Option<DataBlock>,
@@ -234,7 +244,7 @@ struct SSTableWriter {
 }
 
 impl SSTableWriter {
-    fn new(file_num: FileNum) -> Self {
+    pub fn new(file_num: FileNum) -> Self {
         let file = File::create(sstable_file_name(file_num)).unwrap();
         SSTableWriter {
             file_num,
@@ -489,12 +499,24 @@ impl SSTable {
     }
 }
 
-pub fn sstable_file_name(file_num: FileNum) -> String {
-    format!("sstables/sstable_file_{}", file_num)
-}
+impl SSTable {
+    pub fn manifest(&self) -> SSTableManifest {
+        SSTableManifest {
+            file_num: self.file_num,
+            file_size: self.file_size,
+            min_table_key: self.min_table_key.clone(),
+            max_table_key: self.max_table_key.clone(),
+        }
+    }
 
-fn make_block_buf() -> Vec<u8> {
-    vec![0; BLOCK_SIZE]
+    pub fn from_manifest(sstable_manifest: &SSTableManifest) -> Self {
+        Self {
+            file_num: sstable_manifest.file_num,
+            file_size: sstable_manifest.file_size,
+            min_table_key: sstable_manifest.min_table_key.clone(),
+            max_table_key: sstable_manifest.max_table_key.clone(),
+        }
+    }
 }
 
 #[cfg(test)]

@@ -37,6 +37,10 @@ pub const TABLE_KEY_SIZE: usize = mem::size_of::<UserKey>()
     + mem::size_of::<WriteType>()
     + mem::size_of::<UserValue>();
 
+pub fn make_table_key_buf() -> Vec<u8> {
+    vec![0; TABLE_KEY_SIZE]
+}
+
 impl TableKey {
     pub fn new(
         user_key: UserKey,
@@ -111,8 +115,8 @@ impl PartialOrd for TableKey {
                     if let Some(ord) = self.seq_num.partial_cmp(&other.seq_num) {
                         match ord {
                             Ordering::Less => return Some(Ordering::Greater),
-                            Ordering::Greater => return Some(Ordering::Less),
                             Ordering::Equal => return Some(Ordering::Equal),
+                            Ordering::Greater => return Some(Ordering::Less),
                         }
                     }
                 }
@@ -130,8 +134,8 @@ impl Ord for TableKey {
             // keys with higher sequence number are placed first.
             match self.seq_num.cmp(&other.seq_num) {
                 Ordering::Less => return Ordering::Greater,
-                Ordering::Greater => return Ordering::Less,
                 Ordering::Equal => return Ordering::Equal,
+                Ordering::Greater => return Ordering::Less,
             }
         }
         ord
@@ -193,6 +197,10 @@ mod tests {
         assert_eq!(a, b);
 
         b = TableKey::new(0, 1, WriteType::Put, 0);
+        assert!(a > b);
+
+        a = TableKey::new(0, 100, WriteType::Put, 0);
+        b = TableKey::new(0, 1000, WriteType::Put, 0);
         assert!(a > b);
 
         b = TableKey::new(1, 1000, WriteType::Put, 0);

@@ -1,3 +1,4 @@
+use crate::logging::manifest::RunManifest;
 use crate::storage::sstable::{SSTable, SSTableIterator, SSTableStats};
 use std::cmp::{self, Ordering};
 use std::fmt::Display;
@@ -56,7 +57,7 @@ impl Run {
             let mid = lo + half;
             let sstable = self.sstables.get(mid).unwrap();
 
-            // if adjacent sstables contain the same user key, only the left sstable might be target sstable.
+            // if adjacent sstables contain the same user key, only the left sstable might be the target sstable.
             // so the lower-bound binary searching is applied here.
             if sstable.max_table_key.user_key < lookup_key.user_key {
                 // proceed searching in the right half.
@@ -68,7 +69,7 @@ impl Run {
             }
         }
 
-        // further check that this sstable maybe contain the target key.
+        // further check whether this sstable actually contains the target key.
         let sstable = self.sstables.get(lo).unwrap();
         if sstable.min_table_key.user_key <= lookup_key.user_key
             && sstable.max_table_key.user_key >= lookup_key.user_key
@@ -167,6 +168,7 @@ impl TableKeyIterator for RunIterator {
     }
 }
 
+// the following four traits are implemented for BinaryHeap<RunIterator>.
 impl PartialEq for RunIterator {
     fn eq(&self, other: &Self) -> bool {
         match (self.curr(), other.curr()) {
@@ -182,10 +184,19 @@ impl Eq for RunIterator {}
 impl PartialOrd for RunIterator {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         match (self.curr(), other.curr()) {
-            (Some(head), Some(other_head)) => return head.partial_cmp(&other_head),
-            (Some(_), None) => return Some(Ordering::Less),
-            (None, Some(_)) => return Some(Ordering::Greater),
-            (None, None) => return Some(Ordering::Equal),
+            // for two keys [0,0], [0, 100], partial_cmp of TableKey will return Ordering::Greater since
+            // we want to keys with higher sequence numbers to be placed first.
+            // however, the binary heap in rust is a max-heap which makes the key [0,0] swims up since the comparison result is
+            // Ordering::Greater.
+            // hence, we need to reverse the order so that the key [0,100] swims up.
+            (Some(head), Some(other_head)) => match head.partial_cmp(&other_head).unwrap() {
+                Ordering::Less => Some(Ordering::Greater),
+                Ordering::Equal => Some(Ordering::Equal),
+                Ordering::Greater => Some(Ordering::Less),
+            },
+            (Some(_), None) => Some(Ordering::Greater),
+            (None, Some(_)) => Some(Ordering::Less),
+            (None, None) => Some(Ordering::Equal),
         }
     }
 }
@@ -193,10 +204,14 @@ impl PartialOrd for RunIterator {
 impl Ord for RunIterator {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         match (self.curr(), other.curr()) {
-            (Some(head), Some(other_head)) => return head.cmp(&other_head),
-            (Some(_), None) => return Ordering::Less,
-            (None, Some(_)) => return Ordering::Greater,
-            (None, None) => return Ordering::Equal,
+            (Some(head), Some(other_head)) => match head.cmp(&other_head) {
+                Ordering::Less => Ordering::Greater,
+                Ordering::Equal => Ordering::Equal,
+                Ordering::Greater => Ordering::Less,
+            },
+            (Some(_), None) => Ordering::Greater,
+            (None, Some(_)) => Ordering::Less,
+            (None, None) => Ordering::Equal,
         }
     }
 }
@@ -237,5 +252,32 @@ impl Display for RunStats {
         }
 
         write!(f, "{}", stats)
+    }
+}
+
+impl Run {
+    pub fn manifest(&self) -> RunManifest {
+        let mut sstable_manifests = Vec::new();
+        for sstable in self.sstables.iter() {
+            sstable_manifests.push(sstable.manifest());
+        }
+        RunManifest {
+            num_sstables: self.sstables.len(),
+            sstable_manifests,
+            min_table_key: self.min_table_key.as_ref().unwrap().clone(),
+            max_table_key: self.max_table_key.as_ref().unwrap().clone(),
+        }
+    }
+
+    pub fn from_manifest(run_manifest: &RunManifest) -> Self {
+        let mut sstables = Vec::new();
+        for sstable_manifest in run_manifest.sstable_manifests.iter() {
+            sstables.push(Rc::new(SSTable::from_manifest(sstable_manifest)));
+        }
+        Self {
+            sstables,
+            min_table_key: Some(run_manifest.min_table_key.clone()),
+            max_table_key: Some(run_manifest.max_table_key.clone()),
+        }
     }
 }

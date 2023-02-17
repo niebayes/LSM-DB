@@ -19,3 +19,7 @@ pub mod server {
     pub mod cmd;
     pub mod server;
 }
+pub mod logging {
+    pub mod manifest;
+    pub mod wal;
+}

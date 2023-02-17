@@ -6,7 +6,6 @@ use rustyline::Editor;
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::mem;
-use std::path::Path;
 
 /// key-value server.
 pub struct Server {
@@ -120,7 +119,7 @@ impl Server {
             }
             Command::Load(cmd_batch_file) => {
                 // open the file.
-                let file = File::open(Path::new(&cmd_batch_file)).unwrap();
+                let file = File::open(cmd_batch_file).unwrap();
 
                 // read all file content into the buffer.
                 let mut reader = BufReader::new(file);
@@ -152,8 +151,13 @@ impl Server {
 
 #[cfg(test)]
 mod tests {
+    use std::fs::remove_file;
+
     use super::*;
-    use crate::db::db::Config;
+    use crate::{
+        db::db::Config,
+        logging::{manifest::MANIFEST_FILE_PATH, wal::LOG_FILE_PATH},
+    };
 
     // TODO: document each unit tests. Rename them properly.
     #[test]
@@ -171,5 +175,45 @@ mod tests {
             let get = Command::Get(i);
             server.handle_cmd(get);
         }
+    }
+
+    /// randomly puts a set of keys into the server.
+    /// kill the server and then restart.
+    /// check all these keys still exist in the server.
+    fn restart(num_keys: i32) {
+        let _ = remove_file(MANIFEST_FILE_PATH);
+        let _ = remove_file(LOG_FILE_PATH);
+
+        let mut cfg = Config::test();
+        cfg.set_recovery(true);
+        let db = Db::new(cfg);
+        let mut server = Server::new(db);
+        let mut inserted = Vec::new();
+        for i in 0..num_keys {
+            let put = Command::Put(i, i);
+            server.handle_cmd(put);
+            inserted.push(i);
+        }
+
+        server.handle_cmd(Command::Quit);
+
+        // do not go through the server since the server does not expose a get interface for
+        // returning the associated user value.
+        let mut cfg = Config::test();
+        cfg.set_recovery(true);
+        let mut db = Db::new(cfg);
+        for i in 0..num_keys {
+            assert_eq!(db.get(i).unwrap(), i);
+        }
+    }
+
+    #[test]
+    fn mem_only_restart() {
+        restart(100);
+    }
+
+    #[test]
+    fn mem_disk_restart() {
+        restart(10000);
     }
 }

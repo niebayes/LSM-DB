@@ -1,5 +1,7 @@
 use rand::Rng;
 
+use crate::logging::manifest::*;
+use crate::logging::wal::*;
 use crate::storage::block::BLOCK_SIZE;
 use crate::storage::iterator::*;
 use crate::storage::keys::{LookupKey, TableKey, TABLE_KEY_SIZE};
@@ -26,6 +28,8 @@ pub struct Config {
     pub run_capacity: usize,
     /// max number of levels.
     pub max_levels: usize,
+    /// true to turn on recovery.
+    pub recovery: bool,
 }
 
 /// database default configuration.
@@ -46,12 +50,13 @@ impl Default for Config {
             sstable_size_capacity: 16 * 1024 * 1024, // 16MB.
             run_capacity: 4,
             max_levels: 4,
+            recovery: false,
         }
     }
 }
 
-/// database test configuration.
 impl Config {
+    /// database test configuration.
     pub fn test() -> Self {
         Self {
             fanout: 2,
@@ -59,7 +64,12 @@ impl Config {
             sstable_size_capacity: 64 * 1024,  // 64KB.
             run_capacity: 4,
             max_levels: 4,
+            recovery: false,
         }
+    }
+
+    pub fn set_recovery(&mut self, recovery: bool) {
+        self.recovery = recovery;
     }
 }
 
@@ -68,6 +78,8 @@ pub struct Db {
     pub cfg: Config,
     /// memtable.
     mem: MemTable,
+    /// memtable log writer.
+    mem_log_writer: Option<LogWriter>,
     /// all levels in the lsm tree.
     levels: Vec<Level>,
     /// the next sequence number to allocate for a write.
@@ -77,34 +89,50 @@ pub struct Db {
 }
 
 impl Drop for Db {
-    // fields in Db would still be dropped.
     fn drop(&mut self) {
-        // remove the sstables directory.
-        let _ = remove_dir_all("./sstables");
+        // do not remove the sstables directory if recovery is turned on.
+        if !self.cfg.recovery {
+            let _ = remove_dir_all("./sstables");
+        }
     }
 }
 
 impl Db {
     pub fn new(cfg: Config) -> Db {
-        // create a new sstables directory.
+        // create a new sstables directory if not exist.
         let _ = create_dir("./sstables");
 
+        let recovery = cfg.recovery;
+
+        let mut db = Db {
+            cfg,
+            mem: MemTable::new(),
+            mem_log_writer: None,
+            levels: Vec::new(),
+            next_seq_num: 0,
+            next_file_num: 0,
+        };
+        db.levels.push(db.make_default_level(0));
+
+        if recovery {
+            db.recover();
+            db.mem_log_writer = Some(LogWriter::new());
+        }
+
+        db
+    }
+
+    pub fn make_default_level(&self, level_num: LevelNum) -> Level {
         // size capacity of the level 0 = run capacity of the level 0 * (memtable size capacity + 3 * BLOCK_SIZE).
         // where the 3 * BLOCK_SIZE corresponds to the filter, index and footer blocks inherently stored in
         // one sstable file.
-        let default_level_0 = Level::new(
-            0,
-            cfg.run_capacity,
-            cfg.run_capacity * (cfg.memtable_size_capacity + 3 * BLOCK_SIZE),
-        );
-
-        Db {
-            cfg,
-            mem: MemTable::new(),
-            levels: vec![default_level_0],
-            next_seq_num: 0,
-            next_file_num: 0,
-        }
+        let size_capacity_0 =
+            self.cfg.run_capacity * (self.cfg.memtable_size_capacity + 3 * BLOCK_SIZE);
+        Level::new(
+            level_num,
+            self.cfg.run_capacity,
+            self.cfg.fanout.pow(level_num as u32) * size_capacity_0,
+        )
     }
 
     pub fn alloc_seq_num(&mut self) -> SeqNum {
@@ -131,12 +159,23 @@ impl Db {
     fn write(&mut self, user_key: UserKey, user_val: UserValue, write_type: WriteType) {
         let table_key = TableKey::new(user_key, self.alloc_seq_num(), write_type, user_val);
 
+        if self.cfg.recovery {
+            self.mem_log_writer.as_mut().unwrap().push(&table_key);
+        }
         self.mem.put(table_key);
 
         if self.mem.size() > self.cfg.memtable_size_capacity - TABLE_KEY_SIZE {
             self.minor_compaction();
             self.check_level_state();
             self.mem = MemTable::new();
+            if self.cfg.recovery {
+                self.mem_log_writer.as_mut().unwrap().reset();
+            }
+        }
+
+        // currently, recovery only applies on restart and hence we only need to update the manifest after performing write.
+        if self.cfg.recovery {
+            self.update_manifest();
         }
     }
 }
@@ -200,19 +239,22 @@ impl Db {
         // loop inv: there's at least one iterator in the heap.
         while let Some(mut iter) = iters.pop() {
             // proceed if the iterator is not exhausted.
-            if let Some(table_key) = iter.curr() {
+            if iter.valid() {
+                let table_key = iter.curr().unwrap();
+
                 // early termination: the current key has a user key equal to or greater than the end user key.
                 if table_key.user_key >= end_user_key {
                     break;
                 }
 
-                // ensure the table key is in the query range and is visible.
-                if table_key >= start_lookup_key.as_table_key()
-                    && table_key < end_lookup_key.as_table_key()
+                // ensure the table key is in the query range and.
+                if table_key.user_key >= start_lookup_key.user_key
+                    && table_key.user_key < end_lookup_key.user_key
                 {
                     // only the latest visible table key for each user key is collected.
                     if last_user_key.is_none() || table_key.user_key != last_user_key.unwrap() {
                         last_user_key = Some(table_key.user_key);
+
                         match table_key.write_type {
                             // only non-deleted keys are collected.
                             WriteType::Put => {
@@ -498,7 +540,7 @@ impl Db {
             let curr_level = self.levels.get(curr_level_num).unwrap();
             self.levels.push(Level::new(
                 curr_level_num + 1,
-                curr_level.run_capcity,
+                curr_level.run_capacity,
                 curr_level.size_capacity * self.cfg.fanout,
             ))
         }
@@ -669,6 +711,48 @@ impl Db {
     }
 }
 
+/// db recovery implementation.
+impl Db {
+    fn update_manifest(&self) {
+        Manifest::set(self.manifest());
+    }
+
+    fn apply_manifest(&mut self, manifest: Manifest) {
+        self.next_seq_num = manifest.next_seq_num;
+        self.next_file_num = manifest.next_file_num;
+        for level_manifest in manifest.level_manifests.iter() {
+            self.levels.push(Level::from_manifest(level_manifest));
+        }
+    }
+
+    fn manifest(&self) -> Manifest {
+        let mut level_manifests = Vec::new();
+        for level in self.levels.iter() {
+            level_manifests.push(level.manifest());
+        }
+
+        Manifest {
+            next_seq_num: self.next_seq_num,
+            next_file_num: self.next_file_num,
+            num_levels: self.levels.len(),
+            level_manifests,
+        }
+    }
+
+    fn recover(&mut self) {
+        // read and apply the latest manifest if any.
+        if let Some(manifest) = Manifest::get() {
+            self.apply_manifest(manifest);
+        }
+
+        // restore all memtable keys.
+        let table_keys = LogReader::read_all();
+        for table_key in table_keys {
+            self.mem.put(table_key);
+        }
+    }
+}
+
 // `cfg(test)` on the tests module tells Rust to compile and run the test code only when you run cargo test
 #[cfg(test)]
 mod tests {
@@ -789,18 +873,25 @@ mod tests {
         }
     }
 
-    #[test]
-    fn mem_only_range_with_delete() {
+    /// randomly put a set of keys.
+    /// randomly delete a set of keys.
+    /// perform a range query to query all keys.
+    /// check keys not deleted exist.
+    /// check keys deleted do not exist.
+    fn range_with_delete(num_table_keys: i32) {
         let mut db = Db::new(Config::test());
-        let num_table_keys = 100;
         for i in 0..num_table_keys {
             db.put(i, i);
         }
 
-        let max_num_deletes = 20;
+        let max_num_deletes = 200;
         let mut deleted_keys = HashSet::with_capacity(max_num_deletes);
         let mut rng = rand::thread_rng();
-        for _ in 0..max_num_deletes {
+        // for i in 0..max_num_deletes {
+        //     db.delete(i as UserKey);
+        //     deleted_keys.insert(i as UserKey);
+        // }
+        while deleted_keys.len() < max_num_deletes {
             let i = rng.gen_range(0..num_table_keys);
             if !deleted_keys.contains(&i) {
                 db.delete(i);
@@ -834,7 +925,15 @@ mod tests {
         }
     }
 
-    // TODO: add unit testing for on-disk range.
+    #[test]
+    fn mem_only_range_with_delete() {
+        range_with_delete(500);
+    }
+
+    #[test]
+    fn mem_disk_range_with_delete() {
+        range_with_delete(5000);
+    }
 
     /// put a sequence of keys.
     /// randomly select some keys to be deleted.
@@ -846,7 +945,6 @@ mod tests {
     /// check the updated keys are updated.
     /// check all other keys still exist and their values are correct.
     /// the number of keys are configured such that a set of major compactions will be incurred.
-    // FIXME: seems there're still bugs in the implementation
     #[test]
     fn compaction() {
         let mut db = Db::new(Config::test());

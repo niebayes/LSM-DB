@@ -1,3 +1,4 @@
+use crate::logging::manifest::LevelManifest;
 use crate::storage::run::{Run, RunIterator, RunStats};
 use crate::util::types::*;
 use std::cmp;
@@ -18,20 +19,20 @@ pub struct Level {
     /// sorted runs in the level.
     pub runs: Vec<Run>,
     /// max number of sorted runs this level could hold.
-    pub run_capcity: usize,
+    pub run_capacity: usize,
     /// number of bytes this level could hold.
     pub size_capacity: usize,
 }
 
 /// level read implementation.
 impl Level {
-    pub fn new(level_num: LevelNum, run_capcity: usize, size_capacity: usize) -> Level {
+    pub fn new(level_num: LevelNum, run_capacity: usize, size_capacity: usize) -> Level {
         Level {
             level_num,
             min_table_key: None,
             max_table_key: None,
             runs: Vec::new(),
-            run_capcity,
+            run_capacity,
             size_capacity,
         }
     }
@@ -110,12 +111,23 @@ impl TableKeyIterator for LevelIterator {
     }
 
     fn next(&mut self) -> Option<TableKey> {
+        let mut last_user_key = None;
         while let Some(mut run_iter) = self.run_iters.pop() {
-            if let Some(table_key) = run_iter.curr() {
+            if run_iter.valid() {
+                let table_key = run_iter.curr().unwrap();
                 run_iter.next();
                 self.run_iters.push(run_iter);
-                self.curr_table_key = Some(table_key);
-                return self.curr_table_key.clone();
+
+                if last_user_key.is_none() || last_user_key.unwrap() != table_key.user_key {
+                    last_user_key = Some(table_key.user_key);
+
+                    // this line is used to suppress the `unused_assignments` warning.
+                    // FIXME: find a more elegant solution.
+                    let _ = last_user_key.as_ref().unwrap().clone();
+
+                    self.curr_table_key = Some(table_key);
+                    return self.curr_table_key.clone();
+                }
             }
         }
         self.curr_table_key = None;
@@ -204,7 +216,7 @@ impl Level {
         if level_size > self.size_capacity {
             println!("level {} exceeds size capacity", self.level_num);
             LevelState::ExceedSizeCapacity
-        } else if self.runs.len() > self.run_capcity {
+        } else if self.runs.len() > self.run_capacity {
             println!("level {} exceeds run capacity", self.level_num);
             LevelState::ExceedRunCapacity
         } else {
@@ -269,5 +281,142 @@ impl Display for LevelStats {
         }
 
         write!(f, "{}", stats)
+    }
+}
+
+impl Level {
+    pub fn manifest(&self) -> LevelManifest {
+        let mut run_manifests = Vec::new();
+        for run in self.runs.iter() {
+            run_manifests.push(run.manifest());
+        }
+
+        let mut min_table_key = None;
+        let mut max_table_key = None;
+        if self.min_table_key.is_some() {
+            min_table_key = Some(self.min_table_key.as_ref().unwrap().clone());
+        }
+        if self.max_table_key.is_some() {
+            max_table_key = Some(self.max_table_key.as_ref().unwrap().clone());
+        }
+
+        LevelManifest {
+            level_num: self.level_num,
+            run_capacity: self.run_capacity,
+            size_capacity: self.size_capacity,
+            num_runs: self.runs.len(),
+            run_manifests,
+            min_table_key,
+            max_table_key,
+        }
+    }
+
+    pub fn from_manifest(level_manifest: &LevelManifest) -> Self {
+        let mut min_table_key = None;
+        let mut max_table_key = None;
+        if level_manifest.min_table_key.is_some() {
+            min_table_key = Some(level_manifest.min_table_key.as_ref().unwrap().clone());
+            max_table_key = Some(level_manifest.max_table_key.as_ref().unwrap().clone());
+        }
+
+        let mut runs = Vec::new();
+        for run_manifest in level_manifest.run_manifests.iter() {
+            runs.push(Run::from_manifest(run_manifest));
+        }
+
+        Self {
+            level_num: level_manifest.level_num,
+            run_capacity: level_manifest.run_capacity,
+            size_capacity: level_manifest.size_capacity,
+            min_table_key,
+            max_table_key,
+            runs,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::sstable::SSTableWriter;
+    use std::fs::{create_dir, remove_dir_all};
+    use std::rc::Rc;
+
+    /// insert a sequence of keys into an sstable.
+    /// insert another sequence of keys into another sstable but with some delete keys.
+    /// create a run to contain the first sstable.
+    /// create another run to contain the second sstable.
+    /// create a level to contain the two runs.
+    /// create a level iterator from the level.
+    /// emit all keys and check each key is greater than or equal to the last emitted one.
+    /// also check the deleted keys are actually deleted.
+    #[test]
+    fn level_iterator() {
+        let _ = create_dir("./sstables");
+
+        let num_table_keys: i32 = 963;
+        let mut level = Level::new(0, 4, 100000);
+
+        // sstable 1.
+        let file_num = 42;
+        let mut writer = SSTableWriter::new(file_num);
+
+        for i in 0..num_table_keys {
+            let table_key = TableKey::new(i, i as usize, WriteType::Put, i);
+            writer.push(table_key);
+        }
+        let sstable = writer.done();
+        let run = Run::new(
+            vec![Rc::new(sstable)],
+            TableKey::identity(0),
+            TableKey::identity(num_table_keys - 1),
+        );
+        level.add_run(run);
+
+        // sstable 2.
+        let file_num = file_num + 1;
+        let mut writer = SSTableWriter::new(file_num);
+
+        let num_deletes = 200;
+        for i in 0..num_deletes {
+            let table_key = TableKey::new(i, (i + num_table_keys) as usize, WriteType::Delete, i);
+            writer.push(table_key);
+        }
+        for i in num_deletes..num_table_keys {
+            let i = i + num_table_keys;
+            let table_key = TableKey::new(i, i as usize, WriteType::Put, i);
+            writer.push(table_key);
+        }
+        let sstable = writer.done();
+        let run = Run::new(
+            vec![Rc::new(sstable)],
+            TableKey::identity(0),
+            TableKey::identity(num_table_keys * 2 - 1),
+        );
+        level.add_run(run);
+
+        let mut visible_cnt = 0;
+        let mut last_user_key = None;
+        let mut iter = level.iter().unwrap();
+        iter.next();
+        while iter.valid() {
+            let table_key = iter.curr().unwrap();
+            if last_user_key.is_none() || last_user_key.unwrap() != table_key.user_key {
+                last_user_key = Some(table_key.user_key);
+                match table_key.write_type {
+                    WriteType::Put => {
+                        println!("{}", &table_key);
+                        visible_cnt += 1;
+                    }
+                    _ => {}
+                }
+            }
+            iter.next();
+        }
+
+        println!("visible_cnt = {}", visible_cnt);
+        assert_eq!(visible_cnt, num_table_keys * 2 - num_deletes * 2);
+
+        let _ = remove_dir_all("./sstables");
     }
 }
