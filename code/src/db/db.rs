@@ -289,7 +289,7 @@ struct CompactionContext {
 }
 
 impl CompactionContext {
-    fn new(base: Rc<SSTable>) -> Self {
+    fn from_base_sstable(base: Rc<SSTable>) -> Self {
         Self {
             min_user_key: base.min_table_key.user_key,
             max_user_key: base.max_table_key.user_key,
@@ -297,18 +297,29 @@ impl CompactionContext {
         }
     }
 
+    fn from_base_run(run: &Run) -> Self {
+        let mut ctx = CompactionContext::from_base_sstable(run.sstables.first().unwrap().clone());
+        for i in 1..run.sstables.len() {
+            ctx.add_input(run.sstables.get(i).unwrap().clone(), true);
+        }
+        ctx
+    }
+
     fn get_base(&self) -> &SSTable {
         self.inputs.first().unwrap()
+    }
+
+    fn range_overlap(min: i32, max: i32, other_min: i32, other_max: i32) -> bool {
+        (min >= other_min && min <= other_max)
+            || (max >= other_min && max <= other_max)
+            || (min >= other_min && max <= other_max)
+            || (other_min >= min && other_max <= max)
     }
 
     fn overlap(me: &SSTable, other: &SSTable) -> bool {
         let (min, max) = (me.min_table_key.user_key, me.max_table_key.user_key);
         let (other_min, other_max) = (other.min_table_key.user_key, other.max_table_key.user_key);
-
-        (min >= other_min && min <= other_max)
-            || (max >= other_min && max <= other_max)
-            || (min >= other_min && max <= other_max)
-            || (other_min >= min && other_max <= max)
+        CompactionContext::range_overlap(min, max, other_min, other_max)
     }
 
     /// return true if the key range of the given sstable overlaps with the key range of the base sstable.
@@ -317,15 +328,21 @@ impl CompactionContext {
         CompactionContext::overlap(base, other)
     }
 
+    /// return true if the key range of the given sstable overlaps with the key range of the base run.
+    fn overlap_with_base_run(&self, other: &Run) -> bool {
+        let (min, max) = (self.min_user_key, self.max_user_key);
+        let (other_min, other_max) = (
+            other.min_table_key.as_ref().unwrap().user_key,
+            other.max_table_key.as_ref().unwrap().user_key,
+        );
+        CompactionContext::range_overlap(min, max, other_min, other_max)
+    }
+
     /// return true if the key range of the given sstable overlaps with the key range of the current the level.
     fn overlap_with_curr_level(&self, other: &SSTable) -> bool {
         let (min, max) = (self.min_user_key, self.max_user_key);
         let (other_min, other_max) = (other.min_table_key.user_key, other.max_table_key.user_key);
-
-        (min >= other_min && min <= other_max)
-            || (max >= other_min && max <= other_max)
-            || (min >= other_min && max <= other_max)
-            || (other_min >= min && other_max <= max)
+        CompactionContext::range_overlap(min, max, other_min, other_max)
     }
 
     fn add_input(&mut self, input: Rc<SSTable>, is_curr_level: bool) {
@@ -335,6 +352,12 @@ impl CompactionContext {
             self.max_user_key = cmp::max(self.max_user_key, input.max_table_key.user_key);
         }
         self.inputs.push(input);
+    }
+
+    fn add_run(&mut self, run: &Run) {
+        for sstable in run.sstables.iter() {
+            self.add_input(sstable.clone(), true);
+        }
     }
 
     fn iters(&self) -> BinaryHeap<TableKeyIteratorType> {
@@ -420,52 +443,12 @@ impl Db {
     }
 
     fn major_compaction(&mut self, level_num: LevelNum) {
-        // select the base sstable in the current level.
-        let base = self.select_compaction_base(level_num);
-        println!("major compacting level {}", level_num);
-        println!(
-            "base = sstable {},  Min = {}  Max = {}",
-            base.file_num,
-            base.min_table_key.clone(),
-            base.max_table_key.clone()
-        );
-
-        let curr_level = self.levels.get_mut(level_num).unwrap();
-        let mut ctx = CompactionContext::new(base);
-
-        // collect overlapping sstables in the current level.
-        println!("collecting sstables at level {}", level_num);
-        for run in curr_level.runs.iter() {
-            for sstable in run.sstables.iter() {
-                // skip the base sstable itself.
-                if ctx.get_base().file_num == sstable.file_num {
-                    continue;
-                }
-
-                if ctx.overlap_with_base(sstable) {
-                    ctx.add_input(sstable.clone(), true);
-                    println!(
-                        "collect sstable {}, Min = {}  Max = {}",
-                        sstable.file_num,
-                        sstable.min_table_key.clone(),
-                        sstable.max_table_key.clone()
-                    );
-                }
-            }
-        }
-
-        println!(
-            "current level key range: Min = {}  Max = {}",
-            ctx.min_user_key, ctx.max_user_key
-        );
-
-        if let LevelState::ExceedRunCapacity = curr_level.state() {
-            self.horizontal_compaction(&mut ctx, level_num);
+        let curr_level = self.levels.get(level_num).unwrap();
+        if let LevelState::ExceedSizeCapacity = curr_level.state() {
+            self.vertical_compaction(level_num);
         } else {
-            self.vertical_compaction(&mut ctx, level_num);
+            self.horizontal_compaction(level_num);
         }
-
-        self.remove_obsolete_sstables(&ctx);
     }
 
     fn merge(&mut self, iters: &mut BinaryHeap<TableKeyIteratorType>) -> Run {
@@ -534,7 +517,46 @@ impl Db {
     }
 
     /// merge inputs into a new run and insert this run into the next level.
-    fn vertical_compaction(&mut self, ctx: &mut CompactionContext, curr_level_num: LevelNum) {
+    fn vertical_compaction(&mut self, curr_level_num: LevelNum) {
+        // select the base sstable in the current level.
+        let base = self.select_compaction_base(curr_level_num);
+        println!("major compacting level {}", curr_level_num);
+        println!(
+            "base = sstable {},  Min = {}  Max = {}",
+            base.file_num,
+            base.min_table_key.clone(),
+            base.max_table_key.clone()
+        );
+
+        let curr_level = self.levels.get_mut(curr_level_num).unwrap();
+        let mut ctx = CompactionContext::from_base_sstable(base);
+
+        // collect overlapping sstables in the current level.
+        println!("collecting sstables at level {}", curr_level_num);
+        for run in curr_level.runs.iter() {
+            for sstable in run.sstables.iter() {
+                // skip the base sstable itself.
+                if ctx.get_base().file_num == sstable.file_num {
+                    continue;
+                }
+
+                if ctx.overlap_with_base(sstable) {
+                    ctx.add_input(sstable.clone(), true);
+                    println!(
+                        "collect sstable {}, Min = {}  Max = {}",
+                        sstable.file_num,
+                        sstable.min_table_key.clone(),
+                        sstable.max_table_key.clone()
+                    );
+                }
+            }
+        }
+
+        println!(
+            "current level key range: Min = {}  Max = {}",
+            ctx.min_user_key, ctx.max_user_key
+        );
+
         // create the next level if necessary.
         if self.levels.get(curr_level_num + 1).is_none() {
             let curr_level = self.levels.get(curr_level_num).unwrap();
@@ -572,13 +594,19 @@ impl Db {
             .get_mut(curr_level_num + 1)
             .unwrap()
             .add_run(run);
+
+        self.remove_obsolete_sstables(&ctx);
     }
 
-    fn select_compaction_run(&mut self, curr_level_num: LevelNum, base_file_num: FileNum) -> Run {
-        // randomly select a run in the current level.
-        // this run cannot be the run containing the base sstable.
+    // randomly select a run in the current level.
+    // if base_file_num is not none, this run cannot be the run containing the base sstable.
+    fn select_compaction_run(
+        &mut self,
+        curr_level_num: LevelNum,
+        base_file_num: Option<FileNum>,
+    ) -> Run {
         let curr_level = self.levels.get_mut(curr_level_num).unwrap();
-        assert!(curr_level.runs.len() > 1);
+        assert!(curr_level.runs.len() >= 1);
 
         let mut run_idx;
         loop {
@@ -586,10 +614,12 @@ impl Db {
             let run = curr_level.runs.get(run_idx).unwrap();
 
             let mut ok = true;
-            for sstable in run.sstables.iter() {
-                if sstable.file_num == base_file_num {
-                    ok = false;
-                    break;
+            if base_file_num.is_some() {
+                for sstable in run.sstables.iter() {
+                    if sstable.file_num == base_file_num.unwrap() {
+                        ok = false;
+                        break;
+                    }
                 }
             }
             if ok {
@@ -620,40 +650,38 @@ impl Db {
         curr_level.runs.remove(run_idx)
     }
 
-    /// merge inputs into a new run and merge this run with another run in the current level.
-    fn horizontal_compaction(&mut self, ctx: &mut CompactionContext, curr_level_num: LevelNum) {
-        let mut iters: BinaryHeap<TableKeyIteratorType> = BinaryHeap::new();
+    /// randomly select a base run in the current level.
+    /// try to collect overlapping runs with the base run.
+    /// if no runs are collected, randomly select another run in the current level.
+    /// merge this runs into a new run.
+    fn horizontal_compaction(&mut self, curr_level_num: LevelNum) {
+        let base_run = self.select_compaction_run(curr_level_num, None);
+        let mut ctx = CompactionContext::from_base_run(&base_run);
 
-        // collect file nums of the sstables involved in the compaction.
-        let mut obsolete_file_nums = HashSet::new();
-        for sstable in ctx.inputs.iter() {
-            obsolete_file_nums.insert(sstable.file_num);
-        }
-
-        let old_run = self.select_compaction_run(curr_level_num, ctx.get_base().file_num);
-        for sstable in old_run.sstables.iter() {
-            // only sstables not involved in the compaction are merged with the new run.
-            if !obsolete_file_nums.contains(&sstable.file_num) {
-                let mut sstable_iter = Box::new(sstable.iter().unwrap());
-                sstable_iter.next();
-                iters.push(sstable_iter);
+        let curr_level = self.levels.get_mut(curr_level_num).unwrap();
+        let mut overlap_runs = Vec::new();
+        for (run_idx, run) in curr_level.runs.iter().enumerate() {
+            if ctx.overlap_with_base_run(run) {
+                overlap_runs.push(run_idx);
             }
         }
 
-        let new_run = self.merge(&mut ctx.iters());
-        println!(
-            "merged the inputs into a new run. Min = {}  Max = {}",
-            new_run.min_table_key.clone().unwrap(),
-            new_run.max_table_key.clone().unwrap(),
-        );
+        if overlap_runs.is_empty() {
+            let run = self.select_compaction_run(curr_level_num, Some(ctx.get_base().file_num));
+            ctx.add_run(&run);
+        } else {
+            for (i, run_idx) in overlap_runs.iter().enumerate() {
+                // `remove` will shift forward runs after the deleted runs, and hence we need to
+                // shift the run_idx as well.
+                let run_idx = run_idx - i;
+                let run = curr_level.runs.remove(run_idx);
+                ctx.add_run(&run);
+            }
+        }
 
-        let mut new_run_iter = Box::new(new_run.iter().unwrap());
-        new_run_iter.next();
-        iters.push(new_run_iter);
-
-        let merged_run = self.merge(&mut iters);
+        let merged_run = self.merge(&mut ctx.iters());
         println!(
-            "merged the new run and the old run into a merged run. Min = {}  Max = {}",
+            "merged run. Min = {}  Max = {}",
             merged_run.min_table_key.clone().unwrap(),
             merged_run.max_table_key.clone().unwrap(),
         );
@@ -663,6 +691,8 @@ impl Db {
             .get_mut(curr_level_num)
             .unwrap()
             .add_run(merged_run);
+
+        self.remove_obsolete_sstables(&ctx);
     }
 
     fn remove_obsolete_sstables(&mut self, ctx: &CompactionContext) {
@@ -851,6 +881,8 @@ mod tests {
     }
 
     /// configures the #writes such that a major compaction is triggered.
+    /// `num_table_keys` could be set to very large, but remove the sstables directory
+    /// will be way too time-consuming.
     #[test]
     fn major_sequential() {
         let mut db = Db::new(Config::test());
@@ -945,6 +977,7 @@ mod tests {
     /// check the updated keys are updated.
     /// check all other keys still exist and their values are correct.
     /// the number of keys are configured such that a set of major compactions will be incurred.
+    // FIXME: there're still bugs in the implementation. Perhaps arised from the modification of compaction.
     #[test]
     fn compaction() {
         let mut db = Db::new(Config::test());
